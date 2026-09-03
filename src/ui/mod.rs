@@ -21,7 +21,8 @@ pub struct UiContext {
     pending_text: String,
     focused: Option<u32>,
     dragging: Option<u32>,
-    slider_step: i8,
+    horizontal_step: i8,
+    vertical_step: i8,
     focus_order: Vec<u32>,
 }
 
@@ -43,12 +44,10 @@ impl UiContext {
             Event::KeyDown {
                 key: Key::Backspace,
             } => self.backspace_pressed = true,
-            Event::KeyDown {
-                key: Key::Left | Key::Down,
-            } => self.slider_step = -1,
-            Event::KeyDown {
-                key: Key::Right | Key::Up,
-            } => self.slider_step = 1,
+            Event::KeyDown { key: Key::Left } => self.horizontal_step = -1,
+            Event::KeyDown { key: Key::Right } => self.horizontal_step = 1,
+            Event::KeyDown { key: Key::Up } => self.vertical_step = -1,
+            Event::KeyDown { key: Key::Down } => self.vertical_step = 1,
             Event::TextInput { character } if !character.is_control() => {
                 self.pending_text.push(*character);
             }
@@ -64,7 +63,8 @@ impl UiContext {
         self.mouse_pressed_at = None;
         self.backspace_pressed = false;
         self.activate_pressed = false;
-        self.slider_step = 0;
+        self.horizontal_step = 0;
+        self.vertical_step = 0;
         self.pending_text.clear();
     }
 
@@ -223,7 +223,7 @@ impl UiContext {
                 self.dragging = None;
             }
         } else if self.focused == Some(id) {
-            match self.slider_step {
+            match (self.horizontal_step - self.vertical_step).signum() {
                 -1 => *value = value.saturating_sub(1),
                 1 => *value = value.saturating_add(1).min(maximum),
                 _ => {}
@@ -254,6 +254,106 @@ impl UiContext {
             started: pressed,
             dragging: self.dragging == Some(id) && self.left_down,
         }
+    }
+
+    pub fn hue_slider(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        rect: Rect,
+        hue: &mut u32,
+    ) -> SliderResponse {
+        let response = self.slider(framebuffer, id, rect, hue, 359, Color::rgb(255, 0, 0));
+        let track_max = rect.width.saturating_sub(1).max(1);
+        for x in 0..rect.width {
+            let column_hue = x * 359 / track_max;
+            framebuffer.fill_rect(
+                Rect::new(rect.x + x as i32, rect.y, 1, rect.height),
+                Color::from_hsv(column_hue, 255, 255),
+            );
+        }
+        framebuffer.draw_rect(
+            rect,
+            if self.focused == Some(id) {
+                Color::rgb(90, 155, 230)
+            } else {
+                Color::rgb(120, 130, 145)
+            },
+        );
+        let thumb_x = rect.x + (*hue * rect.width.saturating_sub(1) / 359) as i32;
+        framebuffer.fill_rect(
+            Rect::new(thumb_x - 2, rect.y + 2, 4, rect.height.saturating_sub(4)),
+            Color::rgb(255, 255, 255),
+        );
+        response
+    }
+
+    pub fn color_square(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        rect: Rect,
+        hue: u32,
+        saturation: &mut u32,
+        value: &mut u32,
+    ) -> bool {
+        self.register_focus(id);
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(x, y)| rect.contains(x, y));
+        if pressed {
+            self.focused = Some(id);
+            self.dragging = Some(id);
+        }
+
+        let previous = (*saturation, *value);
+        let horizontal_max = rect.width.saturating_sub(1).max(1);
+        let vertical_max = rect.height.saturating_sub(1).max(1);
+        if pressed || self.dragging == Some(id) {
+            let x = (self.pointer.0 - rect.x).clamp(0, horizontal_max as i32) as u32;
+            let y = (self.pointer.1 - rect.y).clamp(0, vertical_max as i32) as u32;
+            *saturation = (x * 255 + horizontal_max / 2) / horizontal_max;
+            *value = 255 - (y * 255 + vertical_max / 2) / vertical_max;
+            if !self.left_down {
+                self.dragging = None;
+            }
+        } else if self.focused == Some(id) {
+            match self.horizontal_step {
+                -1 => *saturation = saturation.saturating_sub(1),
+                1 => *saturation = saturation.saturating_add(1).min(255),
+                _ => {}
+            }
+            match self.vertical_step {
+                -1 => *value = value.saturating_add(1).min(255),
+                1 => *value = value.saturating_sub(1),
+                _ => {}
+            }
+        }
+
+        for y in 0..rect.height {
+            let row_value = 255 - y * 255 / vertical_max;
+            for x in 0..rect.width {
+                let column_saturation = x * 255 / horizontal_max;
+                framebuffer.set_pixel(
+                    rect.x + x as i32,
+                    rect.y + y as i32,
+                    Color::from_hsv(hue, column_saturation as u8, row_value as u8),
+                );
+            }
+        }
+        framebuffer.draw_rect(
+            rect,
+            if self.focused == Some(id) {
+                Color::rgb(90, 155, 230)
+            } else {
+                Color::rgb(120, 130, 145)
+            },
+        );
+        let marker_x = rect.x + (*saturation * horizontal_max / 255) as i32;
+        let marker_y = rect.y + ((255 - *value) * vertical_max / 255) as i32;
+        framebuffer.draw_circle(marker_x, marker_y, 5, Color::rgb(255, 255, 255));
+        framebuffer.draw_circle(marker_x, marker_y, 4, Color::rgb(20, 22, 26));
+        previous != (*saturation, *value)
     }
 
     pub fn radio_button(
@@ -399,5 +499,33 @@ mod tests {
             .changed
         );
         assert_eq!(value, 254);
+    }
+
+    #[test]
+    fn color_square_supports_pointer_and_keyboard_adjustment() {
+        let mut ui = UiContext::default();
+        let mut framebuffer = FrameBuffer::default();
+        let rect = Rect::new(10, 10, 101, 101);
+        let mut saturation = 0;
+        let mut value = 0;
+        framebuffer.resize(130, 130);
+
+        ui.handle_event(&Event::MouseMove { x: 110, y: 10 });
+        ui.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        assert!(ui.color_square(&mut framebuffer, 1, rect, 0, &mut saturation, &mut value,));
+        assert_eq!((saturation, value), (255, 255));
+
+        ui.end_frame();
+        ui.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        ui.color_square(&mut framebuffer, 1, rect, 0, &mut saturation, &mut value);
+        ui.end_frame();
+        ui.handle_event(&Event::KeyDown { key: Key::Left });
+        ui.handle_event(&Event::KeyDown { key: Key::Down });
+        assert!(ui.color_square(&mut framebuffer, 1, rect, 0, &mut saturation, &mut value,));
+        assert_eq!((saturation, value), (254, 254));
     }
 }

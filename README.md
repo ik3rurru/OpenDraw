@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: documentos raster con capas, herramientas de pintura, selector RGB, historial, zoom y desplazamiento en Windows.
+Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -22,8 +22,8 @@ la vista con el botón central.
 El panel izquierdo permite elegir pincel, borrador, cuentagotas o relleno. Pincel
 y borrador ofrecen sliders de grosor y opacidad, con una vista previa a escala. El
 cuentagotas toma el color compuesto de las capas visibles; el relleno reemplaza una
-región de color continuo en la capa activa. `EDIT` abre los sliders RGBA, la vista
-previa y la representación hexadecimal del color actual.
+región de color continuo en la capa activa. `EDIT` abre un campo visual de tono,
+saturación y luminosidad junto a los sliders RGBA y la representación hexadecimal.
 
 El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y ajustar
 con un slider la opacidad de las capas.

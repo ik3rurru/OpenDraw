@@ -36,6 +36,8 @@ const ALPHA_SLIDER: u32 = 29;
 const COLOR_PICKER_DONE_BUTTON: u32 = 30;
 const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
+const COLOR_SQUARE: u32 = 33;
+const HUE_SLIDER: u32 = 34;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub struct App {
     eraser: EraserTool,
     active_tool: ActiveTool,
     color_picker_open: bool,
+    picker_hue: u32,
     control_down: bool,
     undo_history: Vec<Document>,
     redo_history: Vec<Document>,
@@ -102,6 +105,7 @@ impl App {
             eraser: EraserTool::default(),
             active_tool: ActiveTool::Brush,
             color_picker_open: false,
+            picker_hue: 0,
             control_down: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
@@ -477,6 +481,7 @@ impl App {
                 )
             {
                 self.end_tool();
+                self.picker_hue = brush_color.to_hsv().0;
                 self.color_picker_open = true;
                 self.rerender = true;
             }
@@ -700,16 +705,44 @@ impl App {
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
+        self.ui.label(framebuffer, 20, 82, "COLOR");
+
+        let (_, saturation, value) = self.brush.settings.color.to_hsv();
+        let mut saturation = u32::from(saturation);
+        let mut value = u32::from(value);
+        let mut hue = self.picker_hue;
+        let color_changed = self.ui.color_square(
+            framebuffer,
+            COLOR_SQUARE,
+            Rect::new(8, 108, 104, 104),
+            hue,
+            &mut saturation,
+            &mut value,
+        );
+        self.ui.label(framebuffer, 20, 220, &format!("H {hue}"));
+        let hue_changed = self
+            .ui
+            .hue_slider(
+                framebuffer,
+                HUE_SLIDER,
+                Rect::new(8, 240, 104, 20),
+                &mut hue,
+            )
+            .changed;
+        if color_changed || hue_changed {
+            self.picker_hue = hue;
+            self.brush.settings.color = Color::from_hsv(hue, saturation as u8, value as u8);
+            self.rerender = true;
+        }
+
         let mut red = u32::from(self.brush.settings.color.red());
         let mut green = u32::from(self.brush.settings.color.green());
         let mut blue = u32::from(self.brush.settings.color.blue());
         let mut alpha = u32::from(self.brush.settings.opacity);
-        let preview = Rect::new(20, 108, 80, 48);
-
-        self.ui.label(framebuffer, 20, 82, "COLOR");
+        let preview = Rect::new(20, 270, 80, 32);
         framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
-        framebuffer.fill_rect(Rect::new(60, 108, 40, 24), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(Rect::new(20, 132, 40, 24), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(60, 270, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(20, 286, 40, 16), Color::rgb(176, 176, 176));
         framebuffer.fill_rect(
             preview,
             Color::rgba(red as u8, green as u8, blue as u8, alpha as u8),
@@ -718,60 +751,65 @@ impl App {
         self.ui.label(
             framebuffer,
             20,
-            170,
+            310,
             &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
         );
 
-        self.ui.label(framebuffer, 20, 202, &format!("R {red}"));
+        self.ui.label(framebuffer, 20, 338, &format!("R {red}"));
         let mut changed = self
             .ui
             .slider(
                 framebuffer,
                 RED_SLIDER,
-                Rect::new(8, 222, 104, 20),
+                Rect::new(8, 358, 104, 20),
                 &mut red,
                 255,
                 Color::rgb(210, 60, 60),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 252, &format!("G {green}"));
+        self.ui.label(framebuffer, 20, 388, &format!("G {green}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 GREEN_SLIDER,
-                Rect::new(8, 272, 104, 20),
+                Rect::new(8, 408, 104, 20),
                 &mut green,
                 255,
                 Color::rgb(55, 170, 90),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 302, &format!("B {blue}"));
+        self.ui.label(framebuffer, 20, 438, &format!("B {blue}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 BLUE_SLIDER,
-                Rect::new(8, 322, 104, 20),
+                Rect::new(8, 458, 104, 20),
                 &mut blue,
                 255,
                 Color::rgb(60, 120, 220),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 352, &format!("A {alpha}"));
+        self.ui.label(framebuffer, 20, 488, &format!("A {alpha}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 ALPHA_SLIDER,
-                Rect::new(8, 372, 104, 20),
+                Rect::new(8, 508, 104, 20),
                 &mut alpha,
                 255,
                 Color::rgb(225, 228, 232),
             )
             .changed;
         if changed {
-            self.brush.settings.color = Color::rgb(red as u8, green as u8, blue as u8);
+            let color = Color::rgb(red as u8, green as u8, blue as u8);
+            let (hue, saturation, _) = color.to_hsv();
+            if saturation > 0 {
+                self.picker_hue = hue;
+            }
+            self.brush.settings.color = color;
             self.brush.settings.opacity = alpha as u8;
             self.rerender = true;
         }
@@ -779,15 +817,13 @@ impl App {
         if self.ui.button(
             framebuffer,
             COLOR_PICKER_DONE_BUTTON,
-            Rect::new(8, 416, 104, 32),
+            Rect::new(8, 544, 104, 32),
             "DONE",
         ) {
             self.color_picker_open = false;
             self.rerender = true;
             self.ui.clear_focus();
         }
-        self.ui.label(framebuffer, 20, 500, "PAN");
-        self.ui.label(framebuffer, 20, 524, "MIDDLE");
     }
 
     fn checkpoint(&mut self) {
