@@ -117,6 +117,26 @@ impl Window {
         &mut self.state.framebuffer
     }
 
+    pub fn poll_event(&mut self) -> Option<Event> {
+        loop {
+            if let Some(event) = self.state.events.pop_front() {
+                return Some(event);
+            }
+
+            let mut message = MSG::default();
+            if unsafe { PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) } == 0 {
+                return None;
+            }
+            if message.message == WM_QUIT {
+                return Some(Event::CloseRequested);
+            }
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+
     pub fn present(&self) {
         unsafe {
             InvalidateRect(self.handle, ptr::null(), 0);

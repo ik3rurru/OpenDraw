@@ -22,6 +22,12 @@ fn run() -> std::io::Result<()> {
             break;
         };
         app.handle_event(event);
+        while let Some(event) = window.poll_event() {
+            app.handle_event(event);
+        }
+        if !app.running() {
+            break;
+        }
         app.render(window.framebuffer());
         window.present();
     }

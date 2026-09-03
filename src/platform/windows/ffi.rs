@@ -34,6 +34,7 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_SIZE: UINT = 0x0005;
 pub const WM_PAINT: UINT = 0x000f;
 pub const WM_CLOSE: UINT = 0x0010;
+pub const WM_QUIT: UINT = 0x0012;
 pub const WM_ERASEBKGND: UINT = 0x0014;
 pub const WM_NCCREATE: UINT = 0x0081;
 pub const WM_KEYDOWN: UINT = 0x0100;
@@ -49,6 +50,7 @@ pub const WM_RBUTTONUP: UINT = 0x0205;
 pub const WM_MBUTTONDOWN: UINT = 0x0207;
 pub const WM_MBUTTONUP: UINT = 0x0208;
 pub const WM_MOUSEWHEEL: UINT = 0x020a;
+pub const PM_REMOVE: UINT = 0x0001;
 pub const GWLP_USERDATA: i32 = -21;
 pub const IDC_ARROW: *const u16 = 32512_usize as *const u16;
 pub const VK_BACK: u32 = 0x08;
@@ -204,6 +206,13 @@ unsafe extern "system" {
     pub fn DestroyWindow(window: HWND) -> BOOL;
     pub fn PostQuitMessage(exit_code: i32);
     pub fn GetMessageW(message: *mut MSG, window: HWND, min: UINT, max: UINT) -> BOOL;
+    pub fn PeekMessageW(
+        message: *mut MSG,
+        window: HWND,
+        min: UINT,
+        max: UINT,
+        remove_message: UINT,
+    ) -> BOOL;
     pub fn TranslateMessage(message: *const MSG) -> BOOL;
     pub fn DispatchMessageW(message: *const MSG) -> LRESULT;
     pub fn ShowWindow(window: HWND, command: i32) -> BOOL;

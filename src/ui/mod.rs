@@ -9,7 +9,7 @@ const TEXT_SCALE: u32 = 2;
 pub struct UiContext {
     pointer: (i32, i32),
     left_down: bool,
-    mouse_pressed: bool,
+    mouse_pressed_at: Option<(i32, i32)>,
     backspace_pressed: bool,
     activate_pressed: bool,
     pending_text: String,
@@ -23,7 +23,7 @@ impl UiContext {
             Event::MouseMove { x, y } => self.pointer = (*x, *y),
             Event::MouseDown { button } if *button == MouseButton::Left => {
                 self.left_down = true;
-                self.mouse_pressed = true;
+                self.mouse_pressed_at = Some(self.pointer);
             }
             Event::MouseUp { button } if *button == MouseButton::Left => {
                 self.left_down = false;
@@ -47,7 +47,7 @@ impl UiContext {
     }
 
     pub fn end_frame(&mut self) {
-        self.mouse_pressed = false;
+        self.mouse_pressed_at = None;
         self.backspace_pressed = false;
         self.activate_pressed = false;
         self.pending_text.clear();
@@ -86,7 +86,10 @@ impl UiContext {
     ) -> bool {
         self.register_focus(id);
         let hovered = rect.contains(self.pointer.0, self.pointer.1);
-        if hovered && self.mouse_pressed {
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(x, y)| rect.contains(x, y));
+        if pressed {
             self.focused = Some(id);
         }
 
@@ -106,7 +109,7 @@ impl UiContext {
         let text_y = rect.y + rect.height.saturating_sub(7 * TEXT_SCALE) as i32 / 2;
         framebuffer.draw_text(text_x, text_y, text, Color::rgb(255, 255, 255), TEXT_SCALE);
 
-        (hovered && self.mouse_pressed) || (focused && self.activate_pressed)
+        pressed || (focused && self.activate_pressed)
     }
 
     pub fn text_input(
@@ -118,8 +121,8 @@ impl UiContext {
     ) {
         self.register_focus(id);
         let hovered = rect.contains(self.pointer.0, self.pointer.1);
-        if self.mouse_pressed {
-            if hovered {
+        if let Some((x, y)) = self.mouse_pressed_at {
+            if rect.contains(x, y) {
                 self.focused = Some(id);
             } else if self.focused == Some(id) {
                 self.focused = None;
@@ -191,7 +194,10 @@ impl UiContext {
             20,
         );
         let hovered = hit_area.contains(self.pointer.0, self.pointer.1);
-        if hovered && self.mouse_pressed {
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(pointer_x, pointer_y)| hit_area.contains(pointer_x, pointer_y));
+        if pressed {
             self.focused = Some(id);
         }
 
@@ -211,7 +217,7 @@ impl UiContext {
         }
         framebuffer.draw_text(x + 16, y - 7, text, Color::rgb(225, 228, 232), TEXT_SCALE);
 
-        (hovered && self.mouse_pressed) || (focused && self.activate_pressed)
+        pressed || (focused && self.activate_pressed)
     }
 
     fn register_focus(&mut self, id: u32) {
@@ -248,6 +254,7 @@ mod tests {
         ui.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
         });
+        ui.handle_event(&Event::MouseMove { x: 190, y: 50 });
         ui.text_input(&mut framebuffer, 1, rect, &mut value);
         ui.end_frame();
         ui.handle_event(&Event::TextInput { character: 'A' });
