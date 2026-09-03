@@ -13,6 +13,7 @@ const WHITE_RADIO: u32 = 4;
 const CANCEL_BUTTON: u32 = 5;
 const CREATE_BUTTON: u32 = 6;
 const NEW_DOCUMENT_BUTTON: u32 = 7;
+const PENCIL_COLOR: Color = Color::rgb(24, 24, 24);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -39,6 +40,8 @@ pub struct App {
     canvas_view: CanvasView,
     pointer: (i32, i32),
     panning: bool,
+    drawing: bool,
+    last_draw_point: Option<(u32, u32)>,
 }
 
 impl App {
@@ -56,6 +59,8 @@ impl App {
             canvas_view: CanvasView::default(),
             pointer: (0, 0),
             panning: false,
+            drawing: false,
+            last_draw_point: None,
         }
     }
 
@@ -73,6 +78,9 @@ impl App {
                     self.canvas_view.pan(x - self.pointer.0, y - self.pointer.1);
                 }
                 self.pointer = (x, y);
+                if self.drawing {
+                    self.draw_to(x, y);
+                }
             }
             Event::MouseDown {
                 button: MouseButton::Middle,
@@ -83,9 +91,26 @@ impl App {
             {
                 self.panning = true;
             }
+            Event::MouseDown {
+                button: MouseButton::Left,
+            } if self.state == AppState::Editor
+                && self
+                    .canvas_pixel_at(self.pointer.0, self.pointer.1)
+                    .is_some() =>
+            {
+                self.drawing = true;
+                self.last_draw_point = None;
+                self.draw_to(self.pointer.0, self.pointer.1);
+            }
             Event::MouseUp {
                 button: MouseButton::Middle,
             } => self.panning = false,
+            Event::MouseUp {
+                button: MouseButton::Left,
+            } => {
+                self.drawing = false;
+                self.last_draw_point = None;
+            }
             Event::MouseWheel { delta }
                 if self.state == AppState::Editor
                     && self
@@ -247,8 +272,10 @@ impl App {
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
         self.ui.label(framebuffer, 20, 82, "TOOLS");
-        self.ui.label(framebuffer, 20, 116, "PAN");
-        self.ui.label(framebuffer, 20, 140, "MIDDLE");
+        self.ui.label(framebuffer, 20, 116, "PENCIL");
+        self.ui.label(framebuffer, 20, 140, "LEFT");
+        self.ui.label(framebuffer, 20, 184, "PAN");
+        self.ui.label(framebuffer, 20, 208, "MIDDLE");
         self.ui
             .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
@@ -279,6 +306,8 @@ impl App {
         ) {
             self.state = AppState::NewDocument;
             self.panning = false;
+            self.drawing = false;
+            self.last_draw_point = None;
             self.ui.clear_focus();
         }
     }
@@ -326,7 +355,36 @@ impl App {
         self.validation_error = None;
         self.state = AppState::Editor;
         self.panning = false;
+        self.drawing = false;
+        self.last_draw_point = None;
         self.ui.clear_focus();
+    }
+
+    fn canvas_pixel_at(&self, screen_x: i32, screen_y: i32) -> Option<(u32, u32)> {
+        if !self.editor_viewport().contains(screen_x, screen_y) {
+            return None;
+        }
+        let document = self.document.as_ref()?;
+        let (x, y) = self
+            .canvas_view
+            .screen_to_canvas(screen_x as f32, screen_y as f32);
+        (x >= 0.0 && y >= 0.0 && x < document.width as f32 && y < document.height as f32)
+            .then_some((x as u32, y as u32))
+    }
+
+    fn draw_to(&mut self, screen_x: i32, screen_y: i32) {
+        let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
+            self.last_draw_point = None;
+            return;
+        };
+        let previous = self.last_draw_point.unwrap_or(point);
+        self.document
+            .as_mut()
+            .expect("drawing needs a document")
+            .active_layer_mut()
+            .pixels
+            .draw_line(previous.0, previous.1, point.0, point.1, PENCIL_COLOR);
+        self.last_draw_point = Some(point);
     }
 
     fn editor_viewport(&self) -> Rect {
@@ -372,6 +430,31 @@ mod tests {
         assert_eq!(
             document.active_layer().pixels.get_pixel(0, 0),
             Some(Color::rgb(255, 255, 255))
+        );
+
+        let (x, y) = app.canvas_view.canvas_to_screen(0.0, 0.0);
+        app.handle_event(Event::MouseMove {
+            x: x as i32,
+            y: y as i32,
+        });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.handle_event(Event::MouseMove {
+            x: x as i32 + 3,
+            y: y as i32 + 2,
+        });
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(3, 2),
+            Some(PENCIL_COLOR)
         );
     }
 }

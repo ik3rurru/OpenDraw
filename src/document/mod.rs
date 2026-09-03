@@ -2,7 +2,7 @@ mod canvas_view;
 
 use std::fmt;
 
-use crate::graphics::Color;
+use crate::graphics::{Color, rasterize_line};
 
 pub use canvas_view::CanvasView;
 
@@ -63,6 +63,10 @@ impl Document {
     pub fn active_layer(&self) -> &Layer {
         &self.layers[self.active_layer]
     }
+
+    pub fn active_layer_mut(&mut self) -> &mut Layer {
+        &mut self.layers[self.active_layer]
+    }
 }
 
 impl PixelBuffer {
@@ -95,6 +99,18 @@ impl PixelBuffer {
         }
         Some(Color::from_u32(self.pixels[(y * self.width + x) as usize]))
     }
+
+    pub fn set_pixel(&mut self, x: u32, y: u32, color: Color) {
+        if x < self.width && y < self.height {
+            self.pixels[(y * self.width + x) as usize] = color.as_u32();
+        }
+    }
+
+    pub fn draw_line(&mut self, x0: u32, y0: u32, x1: u32, y1: u32, color: Color) {
+        rasterize_line(x0.into(), y0.into(), x1.into(), y1.into(), |x, y| {
+            self.set_pixel(x as u32, y as u32, color);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -104,7 +120,7 @@ mod tests {
     #[test]
     fn creates_one_initialized_layer_with_safe_limits() {
         let white = Color::rgb(255, 255, 255);
-        let document = Document::new(4, 3, white).unwrap();
+        let mut document = Document::new(4, 3, white).unwrap();
         assert_eq!(document.layers.len(), 1);
         assert_eq!(document.active_layer().pixels.get_pixel(3, 2), Some(white));
         assert_eq!(
@@ -115,5 +131,12 @@ mod tests {
             Document::new(16_384, 16_384, white).err(),
             Some(DocumentError::TooLarge)
         );
+
+        let black = Color::rgb(0, 0, 0);
+        document
+            .active_layer_mut()
+            .pixels
+            .draw_line(0, 0, 3, 2, black);
+        assert_eq!(document.active_layer().pixels.get_pixel(2, 1), Some(black));
     }
 }

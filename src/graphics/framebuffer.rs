@@ -1,4 +1,4 @@
-use super::{Color, Rect};
+use super::{Color, Rect, rasterize_line};
 
 #[derive(Default)]
 pub struct FrameBuffer {
@@ -52,28 +52,9 @@ impl FrameBuffer {
     }
 
     pub fn draw_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) {
-        let (mut x0, mut y0, x1, y1) = (x0 as i64, y0 as i64, x1 as i64, y1 as i64);
-        let dx = (x1 - x0).abs();
-        let step_x = if x0 < x1 { 1 } else { -1 };
-        let dy = -(y1 - y0).abs();
-        let step_y = if y0 < y1 { 1 } else { -1 };
-        let mut error = dx + dy;
-
-        loop {
-            self.blend_pixel(x0 as i32, y0 as i32, color);
-            if x0 == x1 && y0 == y1 {
-                break;
-            }
-            let doubled_error = 2 * error;
-            if doubled_error >= dy {
-                error += dy;
-                x0 += step_x;
-            }
-            if doubled_error <= dx {
-                error += dx;
-                y0 += step_y;
-            }
-        }
+        rasterize_line(x0 as i64, y0 as i64, x1 as i64, y1 as i64, |x, y| {
+            self.blend_at(x, y, color);
+        });
     }
 
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
