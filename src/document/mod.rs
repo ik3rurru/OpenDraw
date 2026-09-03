@@ -2,7 +2,7 @@ mod canvas_view;
 
 use std::fmt;
 
-use crate::graphics::{Color, rasterize_line};
+use crate::graphics::Color;
 
 pub use canvas_view::CanvasView;
 
@@ -165,16 +165,24 @@ impl PixelBuffer {
         Some(Color::from_u32(self.pixels[(y * self.width + x) as usize]))
     }
 
-    pub fn set_pixel(&mut self, x: u32, y: u32, color: Color) {
-        if x < self.width && y < self.height {
-            self.pixels[(y * self.width + x) as usize] = color.as_u32();
+    pub(crate) fn stamp_circle(&mut self, center_x: u32, center_y: u32, radius: u32, color: Color) {
+        let radius = i64::from(radius);
+        let radius_squared = radius * radius;
+        for offset_y in -radius..=radius {
+            for offset_x in -radius..=radius {
+                if offset_x * offset_x + offset_y * offset_y > radius_squared {
+                    continue;
+                }
+                let x = i64::from(center_x) + offset_x;
+                let y = i64::from(center_y) + offset_y;
+                if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
+                    continue;
+                }
+                let index = (y as u32 * self.width + x as u32) as usize;
+                let background = Color::from_u32(self.pixels[index]);
+                self.pixels[index] = color.blend_over(background).as_u32();
+            }
         }
-    }
-
-    pub fn draw_line(&mut self, x0: u32, y0: u32, x1: u32, y1: u32, color: Color) {
-        rasterize_line(x0.into(), y0.into(), x1.into(), y1.into(), |x, y| {
-            self.set_pixel(x as u32, y as u32, color);
-        });
     }
 }
 
@@ -198,15 +206,12 @@ mod tests {
         );
 
         let black = Color::rgb(0, 0, 0);
+        document.add_layer().unwrap();
+        assert_eq!(document.active_layer().name, "LAYER 2");
         document
             .active_layer_mut()
             .pixels
-            .draw_line(0, 0, 3, 2, black);
-        assert_eq!(document.active_layer().pixels.get_pixel(2, 1), Some(black));
-
-        document.add_layer().unwrap();
-        assert_eq!(document.active_layer().name, "LAYER 2");
-        document.active_layer_mut().pixels.set_pixel(3, 0, black);
+            .stamp_circle(3, 0, 0, black);
         assert_eq!(
             document.composite_pixel(3, 0, Color::rgba(0, 0, 0, 0)),
             Some(black)

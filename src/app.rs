@@ -2,6 +2,7 @@ use crate::{
     document::{CanvasView, Document, DocumentError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
+    tools::BrushTool,
     ui::UiContext,
 };
 
@@ -22,7 +23,17 @@ const MOVE_DOWN_BUTTON: u32 = 13;
 const MOVE_UP_BUTTON: u32 = 14;
 const ADD_LAYER_BUTTON: u32 = 15;
 const DELETE_LAYER_BUTTON: u32 = 16;
-const PENCIL_COLOR: Color = Color::rgb(24, 24, 24);
+const BRUSH_SIZE_DOWN_BUTTON: u32 = 17;
+const BRUSH_SIZE_UP_BUTTON: u32 = 18;
+const BRUSH_COLOR_BUTTON: u32 = 19;
+const BRUSH_ALPHA_DOWN_BUTTON: u32 = 20;
+const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
+const BRUSH_COLORS: [(Color, &str); 4] = [
+    (Color::rgb(24, 24, 24), "BLACK"),
+    (Color::rgb(210, 60, 60), "RED"),
+    (Color::rgb(55, 170, 90), "GREEN"),
+    (Color::rgb(60, 120, 220), "BLUE"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -49,8 +60,8 @@ pub struct App {
     canvas_view: CanvasView,
     pointer: (i32, i32),
     panning: bool,
-    drawing: bool,
-    last_draw_point: Option<(u32, u32)>,
+    brush: BrushTool,
+    brush_color: usize,
     editor_notice: Option<&'static str>,
     rerender: bool,
 }
@@ -70,8 +81,8 @@ impl App {
             canvas_view: CanvasView::default(),
             pointer: (0, 0),
             panning: false,
-            drawing: false,
-            last_draw_point: None,
+            brush: BrushTool::default(),
+            brush_color: 0,
             editor_notice: None,
             rerender: false,
         }
@@ -91,8 +102,8 @@ impl App {
                     self.canvas_view.pan(x - self.pointer.0, y - self.pointer.1);
                 }
                 self.pointer = (x, y);
-                if self.drawing {
-                    self.draw_to(x, y);
+                if self.brush.is_active() {
+                    self.move_brush(x, y);
                 }
             }
             Event::MouseDown {
@@ -106,24 +117,15 @@ impl App {
             }
             Event::MouseDown {
                 button: MouseButton::Left,
-            } if self.state == AppState::Editor
-                && self
-                    .canvas_pixel_at(self.pointer.0, self.pointer.1)
-                    .is_some() =>
-            {
-                self.drawing = true;
-                self.last_draw_point = None;
-                self.draw_to(self.pointer.0, self.pointer.1);
+            } if self.state == AppState::Editor => {
+                self.begin_brush(self.pointer.0, self.pointer.1);
             }
             Event::MouseUp {
                 button: MouseButton::Middle,
             } => self.panning = false,
             Event::MouseUp {
                 button: MouseButton::Left,
-            } => {
-                self.drawing = false;
-                self.last_draw_point = None;
-            }
+            } => self.brush.pointer_up(),
             Event::MouseWheel { delta }
                 if self.state == AppState::Editor
                     && self
@@ -266,6 +268,10 @@ impl App {
         let layer_count = document.layers.len();
         let layer_visible = document.active_layer().visible;
         let layer_opacity = document.active_layer().opacity;
+        let brush_size = self.brush.settings.radius * 2 + 1;
+        let brush_opacity = self.brush.settings.opacity;
+        let brush_color = self.brush.settings.color;
+        let brush_color_name = BRUSH_COLORS[self.brush_color].1;
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
 
         self.ui
@@ -295,10 +301,71 @@ impl App {
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
         self.ui.label(framebuffer, 20, 82, "TOOLS");
-        self.ui.label(framebuffer, 20, 116, "PENCIL");
-        self.ui.label(framebuffer, 20, 140, "LEFT");
-        self.ui.label(framebuffer, 20, 184, "PAN");
-        self.ui.label(framebuffer, 20, 208, "MIDDLE");
+        self.ui.label(framebuffer, 20, 116, "BRUSH");
+        self.ui
+            .label(framebuffer, 20, 146, &format!("SIZE {brush_size}"));
+        if self.ui.button(
+            framebuffer,
+            BRUSH_SIZE_DOWN_BUTTON,
+            Rect::new(8, 166, 50, 32),
+            "LESS",
+        ) {
+            self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1);
+            self.rerender = true;
+        }
+        if self.ui.button(
+            framebuffer,
+            BRUSH_SIZE_UP_BUTTON,
+            Rect::new(62, 166, 50, 32),
+            "MORE",
+        ) {
+            self.brush.settings.radius = (self.brush.settings.radius + 1).min(127);
+            self.rerender = true;
+        }
+
+        self.ui.label(framebuffer, 20, 214, "COLOR");
+        self.ui.label(framebuffer, 20, 238, brush_color_name);
+        framebuffer.fill_rect(Rect::new(88, 234, 20, 20), brush_color);
+        framebuffer.draw_rect(Rect::new(88, 234, 20, 20), Color::rgb(225, 228, 232));
+        if self.ui.button(
+            framebuffer,
+            BRUSH_COLOR_BUTTON,
+            Rect::new(8, 260, 104, 32),
+            "NEXT",
+        ) {
+            self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
+            self.brush.settings.color = BRUSH_COLORS[self.brush_color].0;
+            self.rerender = true;
+        }
+
+        self.ui.label(framebuffer, 20, 308, "ALPHA");
+        self.ui.label(
+            framebuffer,
+            20,
+            332,
+            &format!("{}%", (u16::from(brush_opacity) * 100 + 127) / 255),
+        );
+        if self.ui.button(
+            framebuffer,
+            BRUSH_ALPHA_DOWN_BUTTON,
+            Rect::new(8, 352, 50, 32),
+            "LESS",
+        ) {
+            self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32);
+            self.rerender = true;
+        }
+        if self.ui.button(
+            framebuffer,
+            BRUSH_ALPHA_UP_BUTTON,
+            Rect::new(62, 352, 50, 32),
+            "MORE",
+        ) {
+            self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32);
+            self.rerender = true;
+        }
+
+        self.ui.label(framebuffer, 20, 410, "PAN");
+        self.ui.label(framebuffer, 20, 434, "MIDDLE");
         self.ui
             .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
@@ -452,8 +519,7 @@ impl App {
         ) {
             self.state = AppState::NewDocument;
             self.panning = false;
-            self.drawing = false;
-            self.last_draw_point = None;
+            self.brush.pointer_up();
             self.editor_notice = None;
             self.ui.clear_focus();
         }
@@ -502,8 +568,7 @@ impl App {
         self.validation_error = None;
         self.state = AppState::Editor;
         self.panning = false;
-        self.drawing = false;
-        self.last_draw_point = None;
+        self.brush.pointer_up();
         self.editor_notice = None;
         self.ui.clear_focus();
     }
@@ -511,8 +576,7 @@ impl App {
     fn layer_changed(&mut self) {
         self.editor_notice = None;
         self.rerender = true;
-        self.drawing = false;
-        self.last_draw_point = None;
+        self.brush.pointer_up();
     }
 
     fn canvas_pixel_at(&self, screen_x: i32, screen_y: i32) -> Option<(u32, u32)> {
@@ -527,23 +591,28 @@ impl App {
             .then_some((x as u32, y as u32))
     }
 
-    fn draw_to(&mut self, screen_x: i32, screen_y: i32) {
+    fn begin_brush(&mut self, screen_x: i32, screen_y: i32) {
         let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
-            self.last_draw_point = None;
             return;
         };
-        let previous = self.last_draw_point.unwrap_or(point);
         if !self.document.as_ref().unwrap().active_layer().visible {
-            self.last_draw_point = None;
             return;
         }
-        self.document
-            .as_mut()
-            .expect("drawing needs a document")
-            .active_layer_mut()
-            .pixels
-            .draw_line(previous.0, previous.1, point.0, point.1, PENCIL_COLOR);
-        self.last_draw_point = Some(point);
+        let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
+        self.brush.pointer_down(pixels, point);
+    }
+
+    fn move_brush(&mut self, screen_x: i32, screen_y: i32) {
+        let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
+            self.brush.break_segment();
+            return;
+        };
+        if !self.document.as_ref().unwrap().active_layer().visible {
+            self.brush.break_segment();
+            return;
+        }
+        let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
+        self.brush.pointer_move(pixels, point);
     }
 
     fn editor_viewport(&self) -> Rect {
@@ -613,7 +682,7 @@ mod tests {
                 .active_layer()
                 .pixels
                 .get_pixel(3, 2),
-            Some(PENCIL_COLOR)
+            Some(app.brush.settings.color)
         );
     }
 }
