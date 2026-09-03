@@ -11,6 +11,12 @@ pub struct SliderResponse {
     pub dragging: bool,
 }
 
+pub struct ClickResponse {
+    pub activated: bool,
+    pub hovered: bool,
+    pub focused: bool,
+}
+
 #[derive(Default)]
 pub struct UiContext {
     pointer: (i32, i32),
@@ -99,19 +105,10 @@ impl UiContext {
         rect: Rect,
         text: &str,
     ) -> bool {
-        self.register_focus(id);
-        let hovered = rect.contains(self.pointer.0, self.pointer.1);
-        let pressed = self
-            .mouse_pressed_at
-            .is_some_and(|(x, y)| rect.contains(x, y));
-        if pressed {
-            self.focused = Some(id);
-        }
-
-        let focused = self.focused == Some(id);
-        let background = if hovered && self.left_down {
+        let response = self.click_target(id, rect);
+        let background = if response.hovered && self.left_down {
             Color::rgb(65, 105, 160)
-        } else if hovered || focused {
+        } else if response.hovered || response.focused {
             Color::rgb(72, 118, 180)
         } else {
             Color::rgb(58, 92, 140)
@@ -124,7 +121,24 @@ impl UiContext {
         let text_y = rect.y + rect.height.saturating_sub(7 * TEXT_SCALE) as i32 / 2;
         framebuffer.draw_text(text_x, text_y, text, Color::rgb(255, 255, 255), TEXT_SCALE);
 
-        pressed || (focused && self.activate_pressed)
+        response.activated
+    }
+
+    pub fn click_target(&mut self, id: u32, rect: Rect) -> ClickResponse {
+        self.register_focus(id);
+        let hovered = rect.contains(self.pointer.0, self.pointer.1);
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(x, y)| rect.contains(x, y));
+        if pressed {
+            self.focused = Some(id);
+        }
+        let focused = self.focused == Some(id);
+        ClickResponse {
+            activated: pressed || (focused && self.activate_pressed),
+            hovered,
+            focused,
+        }
     }
 
     pub fn text_input(

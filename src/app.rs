@@ -1,5 +1,5 @@
 use crate::{
-    document::{CanvasView, Document, DocumentError},
+    document::{CanvasView, Document, DocumentError, Layer},
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
     tools::{BrushTool, EraserTool, Tool},
@@ -14,9 +14,6 @@ const WHITE_RADIO: u32 = 4;
 const CANCEL_BUTTON: u32 = 5;
 const CREATE_BUTTON: u32 = 6;
 const NEW_DOCUMENT_BUTTON: u32 = 7;
-const PREVIOUS_LAYER_BUTTON: u32 = 8;
-const NEXT_LAYER_BUTTON: u32 = 9;
-const VISIBILITY_BUTTON: u32 = 10;
 const LAYER_OPACITY_SLIDER: u32 = 11;
 const MOVE_DOWN_BUTTON: u32 = 13;
 const MOVE_UP_BUTTON: u32 = 14;
@@ -35,8 +32,12 @@ const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
 const COLOR_SQUARE: u32 = 33;
 const HUE_SLIDER: u32 = 34;
+const LAYER_ROW_BASE: u32 = 1_000;
+const LAYER_VISIBILITY_BASE: u32 = 2_000;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
 const EDITOR_LEFT_WIDTH: u32 = 120;
+const EDITOR_RIGHT_WIDTH: u32 = 220;
+const LAYER_ROW_HEIGHT: u32 = 58;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -78,6 +79,7 @@ pub struct App {
     control_down: bool,
     undo_history: Vec<Document>,
     redo_history: Vec<Document>,
+    layer_scroll: usize,
     layer_opacity_drag_recorded: bool,
     editor_notice: Option<&'static str>,
     rerender: bool,
@@ -105,6 +107,7 @@ impl App {
             control_down: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
+            layer_scroll: 0,
             layer_opacity_drag_recorded: false,
             editor_notice: None,
             rerender: false,
@@ -149,6 +152,26 @@ impl App {
             Event::MouseUp {
                 button: MouseButton::Left,
             } => self.end_tool(),
+            Event::MouseWheel { delta }
+                if self.state == AppState::Editor
+                    && self
+                        .layer_list_rect()
+                        .contains(self.pointer.0, self.pointer.1) =>
+            {
+                let maximum = self
+                    .document
+                    .as_ref()
+                    .unwrap()
+                    .layers
+                    .len()
+                    .saturating_sub(self.layer_list_capacity());
+                if delta < 0.0 {
+                    self.layer_scroll = (self.layer_scroll + 1).min(maximum);
+                } else if delta > 0.0 {
+                    self.layer_scroll = self.layer_scroll.saturating_sub(1);
+                }
+                self.rerender = true;
+            }
             Event::MouseWheel { delta }
                 if self.state == AppState::Editor
                     && self
@@ -294,11 +317,6 @@ impl App {
         let document = self.document.as_ref().expect("editor needs a document");
         self.canvas_view.render(document, framebuffer, viewport);
         let document_size = (document.width, document.height);
-        let layer_name = document.active_layer().name.clone();
-        let layer_number = document.active_layer + 1;
-        let layer_count = document.layers.len();
-        let layer_visible = document.active_layer().visible;
-        let layer_opacity = document.active_layer().opacity;
         let (tool_radius, tool_opacity) = match self.active_tool {
             ActiveTool::Brush => (self.brush.settings.radius, self.brush.settings.opacity),
             ActiveTool::Eraser => (self.eraser.settings.radius, self.eraser.settings.opacity),
@@ -317,9 +335,9 @@ impl App {
         self.ui.panel(
             framebuffer,
             Rect::new(
-                window_width - 180,
+                window_width - EDITOR_RIGHT_WIDTH as i32,
                 56,
-                180,
+                EDITOR_RIGHT_WIDTH,
                 self.window_size.1.saturating_sub(56),
             ),
         );
@@ -328,7 +346,9 @@ impl App {
             Rect::new(
                 EDITOR_LEFT_WIDTH as i32,
                 window_height - 36,
-                self.window_size.0.saturating_sub(300),
+                self.window_size
+                    .0
+                    .saturating_sub(EDITOR_LEFT_WIDTH + EDITOR_RIGHT_WIDTH),
                 36,
             ),
         );
@@ -472,76 +492,44 @@ impl App {
             }
         }
         self.render_color_picker(framebuffer);
-        self.ui
-            .label(framebuffer, window_width - 160, 82, "DOCUMENT");
+        let panel_x = window_width - EDITOR_RIGHT_WIDTH as i32;
+        self.ui.label(framebuffer, panel_x + 16, 72, "DOCUMENT");
         self.ui.label(
             framebuffer,
-            window_width - 160,
-            116,
+            panel_x + 16,
+            96,
             &format!("{} X {}", document_size.0, document_size.1),
         );
-        self.ui
-            .label(framebuffer, window_width - 160, 160, "LAYERS");
-        self.ui
-            .label(framebuffer, window_width - 160, 194, &layer_name);
+        let layer_count = self.document.as_ref().unwrap().layers.len();
         self.ui.label(
             framebuffer,
-            window_width - 160,
-            218,
-            &format!("{} / {}", layer_number, layer_count),
+            panel_x + 16,
+            124,
+            &format!("LAYERS {layer_count}"),
         );
+        self.render_layer_list(framebuffer);
 
-        let controls_x = window_width - 164;
-        if self.ui.button(
-            framebuffer,
-            PREVIOUS_LAYER_BUTTON,
-            Rect::new(controls_x, 242, 72, 32),
-            "PREV",
-        ) {
-            let document = self.document.as_mut().unwrap();
-            document.active_layer = document.active_layer.saturating_sub(1);
-            self.layer_changed();
-        }
-        if self.ui.button(
-            framebuffer,
-            NEXT_LAYER_BUTTON,
-            Rect::new(controls_x + 76, 242, 72, 32),
-            "NEXT",
-        ) {
-            let document = self.document.as_mut().unwrap();
-            document.active_layer = (document.active_layer + 1).min(document.layers.len() - 1);
-            self.layer_changed();
-        }
-
+        let controls_top = self.layer_controls_top();
+        let controls_x = panel_x + 16;
+        let (active_layer, layer_count, layer_opacity) = {
+            let document = self.document.as_ref().unwrap();
+            (
+                document.active_layer,
+                document.layers.len(),
+                document.active_layer().opacity,
+            )
+        };
         self.ui.label(
             framebuffer,
-            window_width - 160,
-            288,
-            if layer_visible { "VISIBLE" } else { "HIDDEN" },
-        );
-        if self.ui.button(
-            framebuffer,
-            VISIBILITY_BUTTON,
-            Rect::new(controls_x, 310, 148, 32),
-            if layer_visible { "HIDE" } else { "SHOW" },
-        ) {
-            self.checkpoint();
-            let layer = self.document.as_mut().unwrap().active_layer_mut();
-            layer.visible = !layer.visible;
-            self.layer_changed();
-        }
-
-        self.ui.label(
-            framebuffer,
-            window_width - 160,
-            356,
+            controls_x,
+            controls_top,
             &format!("OPACITY {}%", (u16::from(layer_opacity) * 100 / 255)),
         );
         let mut opacity = u32::from(layer_opacity);
         let response = self.ui.slider(
             framebuffer,
             LAYER_OPACITY_SLIDER,
-            Rect::new(controls_x, 378, 148, 20),
+            Rect::new(controls_x, controls_top + 20, 188, 18),
             &mut opacity,
             255,
             Color::rgb(225, 228, 232),
@@ -561,34 +549,35 @@ impl App {
             self.layer_opacity_drag_recorded = false;
         }
 
-        self.ui.label(framebuffer, window_width - 160, 424, "ORDER");
-        if self.ui.button(
-            framebuffer,
-            MOVE_DOWN_BUTTON,
-            Rect::new(controls_x, 446, 72, 32),
-            "DOWN",
-        ) && layer_number > 1
-        {
-            self.checkpoint();
-            self.document.as_mut().unwrap().move_active_down();
-            self.layer_changed();
-        }
         if self.ui.button(
             framebuffer,
             MOVE_UP_BUTTON,
-            Rect::new(controls_x + 76, 446, 72, 32),
+            Rect::new(controls_x, controls_top + 48, 92, 28),
             "UP",
-        ) && layer_number < layer_count
+        ) && active_layer + 1 < layer_count
         {
             self.checkpoint();
             self.document.as_mut().unwrap().move_active_up();
             self.layer_changed();
+            self.reveal_active_layer();
+        }
+        if self.ui.button(
+            framebuffer,
+            MOVE_DOWN_BUTTON,
+            Rect::new(controls_x + 96, controls_top + 48, 92, 28),
+            "DOWN",
+        ) && active_layer > 0
+        {
+            self.checkpoint();
+            self.document.as_mut().unwrap().move_active_down();
+            self.layer_changed();
+            self.reveal_active_layer();
         }
 
         if self.ui.button(
             framebuffer,
             ADD_LAYER_BUTTON,
-            Rect::new(controls_x, 496, 72, 32),
+            Rect::new(controls_x, controls_top + 84, 92, 28),
             "ADD",
         ) {
             let snapshot = self.document.as_ref().unwrap().clone();
@@ -596,6 +585,7 @@ impl App {
             self.editor_notice = match result {
                 Ok(()) => {
                     self.remember(snapshot);
+                    self.layer_scroll = 0;
                     None
                 }
                 Err(DocumentError::AllocationFailed) => Some("NOT ENOUGH MEMORY"),
@@ -606,12 +596,13 @@ impl App {
         if self.ui.button(
             framebuffer,
             DELETE_LAYER_BUTTON,
-            Rect::new(controls_x + 76, 496, 72, 32),
+            Rect::new(controls_x + 96, controls_top + 84, 92, 28),
             "DELETE",
         ) {
             if layer_count > 1 {
                 self.checkpoint();
                 self.document.as_mut().unwrap().remove_active_layer();
+                self.reveal_active_layer();
                 self.editor_notice = None;
             } else {
                 self.editor_notice = Some("KEEP ONE LAYER");
@@ -747,6 +738,176 @@ impl App {
         }
     }
 
+    fn render_layer_list(&mut self, framebuffer: &mut FrameBuffer) {
+        let list = self.layer_list_rect();
+        let capacity = self.layer_list_capacity();
+        let layer_count = self.document.as_ref().unwrap().layers.len();
+        self.layer_scroll = self.layer_scroll.min(layer_count.saturating_sub(capacity));
+
+        for row in 0..capacity.min(layer_count - self.layer_scroll) {
+            let index = layer_count - 1 - self.layer_scroll - row;
+            let row_rect = Rect::new(
+                list.x,
+                list.y + row as i32 * LAYER_ROW_HEIGHT as i32,
+                list.width,
+                LAYER_ROW_HEIGHT,
+            );
+            let row_response = self.ui.click_target(
+                LAYER_ROW_BASE + index as u32,
+                Rect::new(
+                    row_rect.x + 36,
+                    row_rect.y,
+                    row_rect.width - 36,
+                    row_rect.height,
+                ),
+            );
+            let visibility_rect = Rect::new(row_rect.x + 4, row_rect.y + 15, 28, 28);
+            let visibility_response = self
+                .ui
+                .click_target(LAYER_VISIBILITY_BASE + index as u32, visibility_rect);
+
+            if row_response.activated && self.document.as_ref().unwrap().active_layer != index {
+                self.document.as_mut().unwrap().active_layer = index;
+                self.layer_changed();
+            }
+            if visibility_response.activated {
+                self.checkpoint();
+                let visible = &mut self.document.as_mut().unwrap().layers[index].visible;
+                *visible = !*visible;
+                self.layer_changed();
+            }
+
+            let (selected, visible, opacity, name) = {
+                let document = self.document.as_ref().unwrap();
+                let layer = &document.layers[index];
+                (
+                    document.active_layer == index,
+                    layer.visible,
+                    layer.opacity,
+                    layer.name.clone(),
+                )
+            };
+            framebuffer.fill_rect(
+                row_rect,
+                if selected {
+                    Color::rgb(65, 82, 112)
+                } else if row_response.hovered {
+                    Color::rgb(48, 54, 64)
+                } else {
+                    Color::rgb(35, 39, 46)
+                },
+            );
+            framebuffer.draw_rect(
+                row_rect,
+                if selected || row_response.focused {
+                    Color::rgb(90, 155, 230)
+                } else {
+                    Color::rgb(75, 82, 92)
+                },
+            );
+            framebuffer.fill_rect(
+                visibility_rect,
+                if visibility_response.hovered || visibility_response.focused {
+                    Color::rgb(58, 92, 140)
+                } else {
+                    Color::rgb(27, 30, 35)
+                },
+            );
+            framebuffer.draw_rect(visibility_rect, Color::rgb(88, 94, 105));
+            Self::draw_eye(
+                framebuffer,
+                visibility_rect.x + 14,
+                visibility_rect.y + 14,
+                visible,
+            );
+
+            let thumbnail = Rect::new(row_rect.x + 40, row_rect.y + 5, 48, 48);
+            Self::draw_layer_thumbnail(
+                framebuffer,
+                &self.document.as_ref().unwrap().layers[index],
+                thumbnail,
+            );
+            framebuffer.draw_text(
+                row_rect.x + 94,
+                row_rect.y + 9,
+                &name,
+                Color::rgb(235, 238, 242),
+                2,
+            );
+            framebuffer.draw_text(
+                row_rect.x + 94,
+                row_rect.y + 35,
+                &format!("{}%", (u16::from(opacity) * 100 + 127) / 255),
+                Color::rgb(180, 186, 196),
+                1,
+            );
+        }
+
+        if layer_count > capacity {
+            let track = Rect::new(list.x + list.width as i32 - 5, list.y, 4, list.height);
+            framebuffer.fill_rect(track, Color::rgb(22, 25, 30));
+            let thumb_height = (list.height * capacity as u32 / layer_count as u32).max(16);
+            let travel = list.height.saturating_sub(thumb_height);
+            let maximum = layer_count - capacity;
+            let thumb_y = list.y + (self.layer_scroll as u32 * travel / maximum as u32) as i32;
+            framebuffer.fill_rect(
+                Rect::new(track.x, thumb_y, track.width, thumb_height),
+                Color::rgb(120, 130, 145),
+            );
+        }
+    }
+
+    fn draw_layer_thumbnail(framebuffer: &mut FrameBuffer, layer: &Layer, rect: Rect) {
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                let checker = if (x / 6 + y / 6).is_multiple_of(2) {
+                    Color::rgb(210, 210, 210)
+                } else {
+                    Color::rgb(160, 160, 160)
+                };
+                let pixel = layer
+                    .pixels
+                    .get_pixel(
+                        x * layer.pixels.width / rect.width,
+                        y * layer.pixels.height / rect.height,
+                    )
+                    .unwrap();
+                let pixel = Color::rgba(
+                    pixel.red(),
+                    pixel.green(),
+                    pixel.blue(),
+                    ((u16::from(pixel.alpha()) * u16::from(layer.opacity) + 127) / 255) as u8,
+                );
+                let preview = pixel.blend_over(checker);
+                framebuffer.set_pixel(
+                    rect.x + x as i32,
+                    rect.y + y as i32,
+                    if layer.visible {
+                        preview
+                    } else {
+                        Color::rgba(27, 30, 35, 120).blend_over(preview)
+                    },
+                );
+            }
+        }
+        framebuffer.draw_rect(rect, Color::rgb(150, 160, 175));
+    }
+
+    fn draw_eye(framebuffer: &mut FrameBuffer, x: i32, y: i32, visible: bool) {
+        let color = Color::rgb(210, 216, 224);
+        framebuffer.draw_line(x - 9, y, x - 4, y - 5, color);
+        framebuffer.draw_line(x - 4, y - 5, x + 4, y - 5, color);
+        framebuffer.draw_line(x + 4, y - 5, x + 9, y, color);
+        framebuffer.draw_line(x - 9, y, x - 4, y + 5, color);
+        framebuffer.draw_line(x - 4, y + 5, x + 4, y + 5, color);
+        framebuffer.draw_line(x + 4, y + 5, x + 9, y, color);
+        if visible {
+            framebuffer.fill_circle(x, y, 3, color);
+        } else {
+            framebuffer.draw_line(x - 8, y - 8, x + 8, y + 8, Color::rgb(220, 90, 80));
+        }
+    }
+
     fn checkpoint(&mut self) {
         let snapshot_bytes = Self::document_bytes(self.document.as_ref().unwrap());
         self.prepare_history(snapshot_bytes);
@@ -777,6 +938,7 @@ impl App {
         self.end_tool();
         let current = self.document.replace(previous).unwrap();
         self.redo_history.push(current);
+        self.reveal_active_layer();
         self.editor_notice = None;
         self.rerender = true;
     }
@@ -788,6 +950,7 @@ impl App {
         self.end_tool();
         let current = self.document.replace(next).unwrap();
         self.undo_history.push(current);
+        self.reveal_active_layer();
         self.editor_notice = None;
         self.rerender = true;
     }
@@ -850,6 +1013,7 @@ impl App {
         self.end_tool();
         self.undo_history.clear();
         self.redo_history.clear();
+        self.layer_scroll = 0;
         self.editor_notice = None;
         self.ui.clear_focus();
     }
@@ -973,9 +1137,44 @@ impl App {
         Rect::new(
             EDITOR_LEFT_WIDTH as i32,
             56,
-            self.window_size.0.saturating_sub(300),
+            self.window_size
+                .0
+                .saturating_sub(EDITOR_LEFT_WIDTH + EDITOR_RIGHT_WIDTH),
             self.window_size.1.saturating_sub(92),
         )
+    }
+
+    fn layer_controls_top(&self) -> i32 {
+        (self.window_size.1.min(i32::MAX as u32) as i32 - 174).max(230)
+    }
+
+    fn layer_list_rect(&self) -> Rect {
+        let panel_x = self.window_size.0.min(i32::MAX as u32) as i32 - EDITOR_RIGHT_WIDTH as i32;
+        let top = 148;
+        Rect::new(
+            panel_x + 8,
+            top,
+            EDITOR_RIGHT_WIDTH - 16,
+            (self.layer_controls_top() - top).max(0) as u32,
+        )
+    }
+
+    fn layer_list_capacity(&self) -> usize {
+        (self.layer_list_rect().height / LAYER_ROW_HEIGHT).max(1) as usize
+    }
+
+    fn reveal_active_layer(&mut self) {
+        let capacity = self.layer_list_capacity();
+        let document = self.document.as_ref().unwrap();
+        let position_from_top = document.layers.len() - 1 - document.active_layer;
+        if position_from_top < self.layer_scroll {
+            self.layer_scroll = position_from_top;
+        } else if position_from_top >= self.layer_scroll + capacity {
+            self.layer_scroll = position_from_top - capacity + 1;
+        }
+        self.layer_scroll = self
+            .layer_scroll
+            .min(document.layers.len().saturating_sub(capacity));
     }
 
     fn window_center(&self) -> (i32, i32) {
@@ -1145,12 +1344,12 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         framebuffer.resize(1000, 700);
 
-        app.handle_event(Event::MouseMove { x: 900, y: 388 });
+        app.handle_event(Event::MouseMove { x: 900, y: 555 });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
         app.render(&mut framebuffer);
-        app.handle_event(Event::MouseMove { x: 850, y: 388 });
+        app.handle_event(Event::MouseMove { x: 810, y: 555 });
         app.render(&mut framebuffer);
         app.handle_event(Event::MouseUp {
             button: MouseButton::Left,
@@ -1161,6 +1360,43 @@ mod tests {
         assert!(app.document.as_ref().unwrap().active_layer().opacity < 255);
         app.undo();
         assert_eq!(app.document.as_ref().unwrap().active_layer().opacity, 255);
+    }
+
+    #[test]
+    fn visual_layer_list_selects_hides_and_scrolls_layers() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        let mut document = Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap();
+        for _ in 0..6 {
+            document.add_layer().unwrap();
+        }
+        app.document = Some(document);
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+
+        app.handle_event(Event::MouseMove { x: 900, y: 220 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        assert_eq!(app.document.as_ref().unwrap().active_layer, 5);
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+
+        app.handle_event(Event::MouseMove { x: 800, y: 230 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        assert!(!app.document.as_ref().unwrap().layers[5].visible);
+        assert_eq!(app.undo_history.len(), 1);
+
+        app.handle_event(Event::MouseMove { x: 900, y: 400 });
+        app.handle_event(Event::MouseWheel { delta: -1.0 });
+        assert_eq!(app.layer_scroll, 1);
     }
 
     #[test]

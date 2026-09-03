@@ -26,7 +26,9 @@ región de color continuo en la capa activa. Debajo de la opacidad, el selector 
 tono, saturación y luminosidad permanece visible y aplica cada cambio al instante,
 junto a los sliders RGB y la representación hexadecimal.
 
-El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y ajustar
-con un slider la opacidad de las capas.
+El panel derecho muestra las capas superpuestas de arriba abajo, con miniaturas del
+contenido. Haz clic en una fila para activarla o en su ojo para mostrarla y ocultarla;
+la rueda recorre listas largas. También permite añadir, eliminar, ordenar y ajustar
+con un slider la opacidad de la capa activa.
 
 `UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.
