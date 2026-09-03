@@ -15,4 +15,13 @@ impl Rect {
             height,
         }
     }
+
+    pub fn contains(self, x: i32, y: i32) -> bool {
+        let x = x as i64;
+        let y = y as i64;
+        x >= self.x as i64
+            && y >= self.y as i64
+            && x < self.x as i64 + self.width as i64
+            && y < self.y as i64 + self.height as i64
+    }
 }

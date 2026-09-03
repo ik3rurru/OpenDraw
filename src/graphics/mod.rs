@@ -1,4 +1,5 @@
 mod color;
+mod font;
 mod framebuffer;
 mod rect;
 

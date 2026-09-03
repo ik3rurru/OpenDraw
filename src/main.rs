@@ -1,6 +1,7 @@
 mod app;
 mod graphics;
 mod platform;
+mod ui;
 
 #[cfg(target_os = "windows")]
 fn main() {
