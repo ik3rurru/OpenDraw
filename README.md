@@ -19,12 +19,13 @@ Haz clic en el campo para escribir; `Tab` cambia el foco y `Enter` o espacio act
 En el lienzo, dibuja con el botón izquierdo, usa la rueda para el zoom y desplaza
 la vista con el botón central.
 
-El panel izquierdo permite elegir pincel, borrador, cuentagotas o relleno. El
+El panel izquierdo permite elegir pincel, borrador, cuentagotas o relleno. Pincel
+y borrador ofrecen sliders de grosor y opacidad, con una vista previa a escala. El
 cuentagotas toma el color compuesto de las capas visibles; el relleno reemplaza una
 región de color continuo en la capa activa. `EDIT` abre los sliders RGBA, la vista
 previa y la representación hexadecimal del color actual.
 
-El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y cambiar
-la opacidad de las capas.
+El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y ajustar
+con un slider la opacidad de las capas.
 
 `UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.

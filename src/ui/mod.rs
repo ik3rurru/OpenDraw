@@ -5,6 +5,12 @@ use crate::{
 
 const TEXT_SCALE: u32 = 2;
 
+pub struct SliderResponse {
+    pub changed: bool,
+    pub started: bool,
+    pub dragging: bool,
+}
+
 #[derive(Default)]
 pub struct UiContext {
     pointer: (i32, i32),
@@ -191,9 +197,11 @@ impl UiContext {
         framebuffer: &mut FrameBuffer,
         id: u32,
         rect: Rect,
-        value: &mut u8,
+        value: &mut u32,
+        maximum: u32,
         color: Color,
-    ) -> bool {
+    ) -> SliderResponse {
+        assert!(maximum > 0);
         self.register_focus(id);
         let pressed = self
             .mouse_pressed_at
@@ -205,10 +213,11 @@ impl UiContext {
 
         let previous = *value;
         if pressed || self.dragging == Some(id) {
-            let maximum = rect.width.saturating_sub(1);
-            if maximum > 0 {
-                let position = (self.pointer.0 - rect.x).clamp(0, maximum as i32) as u32;
-                *value = ((position * 255 + maximum / 2) / maximum) as u8;
+            let track_max = rect.width.saturating_sub(1);
+            if track_max > 0 {
+                let position = (self.pointer.0 - rect.x).clamp(0, track_max as i32) as u32;
+                *value = ((u64::from(position) * u64::from(maximum) + u64::from(track_max) / 2)
+                    / u64::from(track_max)) as u32;
             }
             if !self.left_down {
                 self.dragging = None;
@@ -216,13 +225,14 @@ impl UiContext {
         } else if self.focused == Some(id) {
             match self.slider_step {
                 -1 => *value = value.saturating_sub(1),
-                1 => *value = value.saturating_add(1),
+                1 => *value = value.saturating_add(1).min(maximum),
                 _ => {}
             }
         }
 
         framebuffer.fill_rect(rect, Color::rgb(22, 25, 30));
-        let filled = (u32::from(*value) * rect.width).div_ceil(255);
+        let filled =
+            (u64::from(*value) * u64::from(rect.width)).div_ceil(u64::from(maximum)) as u32;
         framebuffer.fill_rect(Rect::new(rect.x, rect.y, filled, rect.height), color);
         framebuffer.draw_rect(
             rect,
@@ -232,12 +242,18 @@ impl UiContext {
                 Color::rgb(120, 130, 145)
             },
         );
-        let thumb_x = rect.x + (u32::from(*value) * rect.width.saturating_sub(1) / 255) as i32;
+        let thumb_x = rect.x
+            + (u64::from(*value) * u64::from(rect.width.saturating_sub(1)) / u64::from(maximum))
+                as i32;
         framebuffer.fill_rect(
             Rect::new(thumb_x - 2, rect.y + 2, 4, rect.height.saturating_sub(4)),
             Color::rgb(255, 255, 255),
         );
-        previous != *value
+        SliderResponse {
+            changed: previous != *value,
+            started: pressed,
+            dragging: self.dragging == Some(id) && self.left_down,
+        }
     }
 
     pub fn radio_button(
@@ -344,17 +360,44 @@ mod tests {
         ui.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
         });
-        assert!(ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0)));
+        assert!(
+            ui.slider(
+                &mut framebuffer,
+                1,
+                rect,
+                &mut value,
+                255,
+                Color::rgb(255, 0, 0)
+            )
+            .changed
+        );
         assert_eq!(value, 255);
         ui.end_frame();
         ui.handle_event(&Event::MouseUp {
             button: MouseButton::Left,
         });
-        ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0));
+        ui.slider(
+            &mut framebuffer,
+            1,
+            rect,
+            &mut value,
+            255,
+            Color::rgb(255, 0, 0),
+        );
         ui.end_frame();
 
         ui.handle_event(&Event::KeyDown { key: Key::Left });
-        assert!(ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0)));
+        assert!(
+            ui.slider(
+                &mut framebuffer,
+                1,
+                rect,
+                &mut value,
+                255,
+                Color::rgb(255, 0, 0)
+            )
+            .changed
+        );
         assert_eq!(value, 254);
     }
 }

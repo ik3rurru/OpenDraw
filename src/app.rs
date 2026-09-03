@@ -17,17 +17,14 @@ const NEW_DOCUMENT_BUTTON: u32 = 7;
 const PREVIOUS_LAYER_BUTTON: u32 = 8;
 const NEXT_LAYER_BUTTON: u32 = 9;
 const VISIBILITY_BUTTON: u32 = 10;
-const OPACITY_DOWN_BUTTON: u32 = 11;
-const OPACITY_UP_BUTTON: u32 = 12;
+const LAYER_OPACITY_SLIDER: u32 = 11;
 const MOVE_DOWN_BUTTON: u32 = 13;
 const MOVE_UP_BUTTON: u32 = 14;
 const ADD_LAYER_BUTTON: u32 = 15;
 const DELETE_LAYER_BUTTON: u32 = 16;
-const BRUSH_SIZE_DOWN_BUTTON: u32 = 17;
-const BRUSH_SIZE_UP_BUTTON: u32 = 18;
+const TOOL_SIZE_SLIDER: u32 = 17;
 const OPEN_COLOR_PICKER_BUTTON: u32 = 19;
-const BRUSH_ALPHA_DOWN_BUTTON: u32 = 20;
-const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
+const TOOL_OPACITY_SLIDER: u32 = 20;
 const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
 const SELECT_EYEDROPPER_BUTTON: u32 = 24;
@@ -81,6 +78,7 @@ pub struct App {
     control_down: bool,
     undo_history: Vec<Document>,
     redo_history: Vec<Document>,
+    layer_opacity_drag_recorded: bool,
     editor_notice: Option<&'static str>,
     rerender: bool,
 }
@@ -107,6 +105,7 @@ impl App {
             control_down: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
+            layer_opacity_drag_recorded: false,
             editor_notice: None,
             rerender: false,
         }
@@ -304,18 +303,10 @@ impl App {
         let layer_count = document.layers.len();
         let layer_visible = document.active_layer().visible;
         let layer_opacity = document.active_layer().opacity;
-        let (tool_name, tool_radius, tool_opacity) = match self.active_tool {
-            ActiveTool::Brush => (
-                "BRUSH",
-                self.brush.settings.radius,
-                self.brush.settings.opacity,
-            ),
-            ActiveTool::Eraser => (
-                "ERASER",
-                self.eraser.settings.radius,
-                self.eraser.settings.opacity,
-            ),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => ("", 0, self.brush.settings.opacity),
+        let (tool_radius, tool_opacity) = match self.active_tool {
+            ActiveTool::Brush => (self.brush.settings.radius, self.brush.settings.opacity),
+            ActiveTool::Eraser => (self.eraser.settings.radius, self.eraser.settings.opacity),
+            ActiveTool::Eyedropper | ActiveTool::Bucket => (0, self.brush.settings.opacity),
         };
         let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
@@ -413,40 +404,46 @@ impl App {
         }
 
         if matches!(self.active_tool, ActiveTool::Brush | ActiveTool::Eraser) {
-            self.ui
-                .label(framebuffer, 20, 218, &format!("{tool_name} SIZE"));
-            self.ui.label(framebuffer, 20, 242, &format!("{tool_size}"));
-            if self.ui.button(
-                framebuffer,
-                BRUSH_SIZE_DOWN_BUTTON,
-                Rect::new(8, 264, 50, 32),
-                "LESS",
-            ) {
+            let preview = Rect::new(20, 218, 80, 64);
+            let preview_radius = 2 + tool_radius * 26 / 127;
+            framebuffer.fill_rect(preview, Color::rgb(22, 25, 30));
+            framebuffer.fill_circle(
+                60,
+                250,
+                preview_radius,
                 match self.active_tool {
-                    ActiveTool::Brush => {
-                        self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1)
-                    }
-                    ActiveTool::Eraser => {
-                        self.eraser.settings.radius = self.eraser.settings.radius.saturating_sub(1)
-                    }
-                    ActiveTool::Eyedropper | ActiveTool::Bucket => {}
-                }
-                self.rerender = true;
-            }
-            if self.ui.button(
-                framebuffer,
-                BRUSH_SIZE_UP_BUTTON,
-                Rect::new(62, 264, 50, 32),
-                "MORE",
-            ) {
+                    ActiveTool::Brush => Color::rgba(
+                        brush_color.red(),
+                        brush_color.green(),
+                        brush_color.blue(),
+                        tool_opacity,
+                    ),
+                    ActiveTool::Eraser => Color::rgb(205, 210, 218),
+                    ActiveTool::Eyedropper | ActiveTool::Bucket => unreachable!(),
+                },
+            );
+            framebuffer.draw_circle(60, 250, preview_radius, Color::rgb(255, 255, 255));
+            framebuffer.draw_rect(preview, Color::rgb(120, 130, 145));
+
+            self.ui.label(framebuffer, 20, 292, "SIZE");
+            self.ui.label(framebuffer, 76, 292, &format!("{tool_size}"));
+            let mut radius = tool_radius;
+            if self
+                .ui
+                .slider(
+                    framebuffer,
+                    TOOL_SIZE_SLIDER,
+                    Rect::new(8, 314, 104, 20),
+                    &mut radius,
+                    127,
+                    Color::rgb(90, 155, 230),
+                )
+                .changed
+            {
                 match self.active_tool {
-                    ActiveTool::Brush => {
-                        self.brush.settings.radius = (self.brush.settings.radius + 1).min(127)
-                    }
-                    ActiveTool::Eraser => {
-                        self.eraser.settings.radius = (self.eraser.settings.radius + 1).min(127)
-                    }
-                    ActiveTool::Eyedropper | ActiveTool::Bucket => {}
+                    ActiveTool::Brush => self.brush.settings.radius = radius,
+                    ActiveTool::Eraser => self.eraser.settings.radius = radius,
+                    ActiveTool::Eyedropper | ActiveTool::Bucket => unreachable!(),
                 }
                 self.rerender = true;
             }
@@ -458,7 +455,7 @@ impl App {
             _ => {}
         }
         let color_y = match self.active_tool {
-            ActiveTool::Brush => Some(312),
+            ActiveTool::Brush => Some(402),
             ActiveTool::Eyedropper | ActiveTool::Bucket => Some(264),
             ActiveTool::Eraser => None,
         };
@@ -486,53 +483,37 @@ impl App {
         }
 
         let alpha_y = match self.active_tool {
-            ActiveTool::Brush => 406,
-            ActiveTool::Eraser => 312,
+            ActiveTool::Brush | ActiveTool::Eraser => 346,
             ActiveTool::Eyedropper => 328,
             ActiveTool::Bucket => 358,
         };
 
-        self.ui.label(framebuffer, 20, alpha_y, "ALPHA");
         self.ui.label(
             framebuffer,
             20,
-            alpha_y + 24,
-            &format!("{}%", (u16::from(tool_opacity) * 100 + 127) / 255),
+            alpha_y,
+            &format!("A {}%", (u16::from(tool_opacity) * 100 + 127) / 255),
         );
         if self.active_tool != ActiveTool::Eyedropper {
-            if self.ui.button(
-                framebuffer,
-                BRUSH_ALPHA_DOWN_BUTTON,
-                Rect::new(8, alpha_y + 46, 50, 32),
-                "LESS",
-            ) {
+            let mut opacity = u32::from(tool_opacity);
+            if self
+                .ui
+                .slider(
+                    framebuffer,
+                    TOOL_OPACITY_SLIDER,
+                    Rect::new(8, alpha_y + 24, 104, 20),
+                    &mut opacity,
+                    255,
+                    Color::rgb(225, 228, 232),
+                )
+                .changed
+            {
                 match self.active_tool {
                     ActiveTool::Brush | ActiveTool::Bucket => {
-                        self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32)
+                        self.brush.settings.opacity = opacity as u8
                     }
-                    ActiveTool::Eraser => {
-                        self.eraser.settings.opacity =
-                            self.eraser.settings.opacity.saturating_sub(32)
-                    }
-                    ActiveTool::Eyedropper => {}
-                }
-                self.rerender = true;
-            }
-            if self.ui.button(
-                framebuffer,
-                BRUSH_ALPHA_UP_BUTTON,
-                Rect::new(62, alpha_y + 46, 50, 32),
-                "MORE",
-            ) {
-                match self.active_tool {
-                    ActiveTool::Brush | ActiveTool::Bucket => {
-                        self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32)
-                    }
-                    ActiveTool::Eraser => {
-                        self.eraser.settings.opacity =
-                            self.eraser.settings.opacity.saturating_add(32)
-                    }
-                    ActiveTool::Eyedropper => {}
+                    ActiveTool::Eraser => self.eraser.settings.opacity = opacity as u8,
+                    ActiveTool::Eyedropper => unreachable!(),
                 }
                 self.rerender = true;
             }
@@ -605,29 +586,28 @@ impl App {
             356,
             &format!("OPACITY {}%", (u16::from(layer_opacity) * 100 / 255)),
         );
-        if self.ui.button(
+        let mut opacity = u32::from(layer_opacity);
+        let response = self.ui.slider(
             framebuffer,
-            OPACITY_DOWN_BUTTON,
-            Rect::new(controls_x, 378, 72, 32),
-            "LESS",
-        ) && layer_opacity > 0
-        {
+            LAYER_OPACITY_SLIDER,
+            Rect::new(controls_x, 378, 148, 20),
+            &mut opacity,
+            255,
+            Color::rgb(225, 228, 232),
+        );
+        if response.started {
+            self.layer_opacity_drag_recorded = false;
+        }
+        if response.changed && !self.layer_opacity_drag_recorded {
             self.checkpoint();
-            let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
-            *opacity = opacity.saturating_sub(32);
+            self.layer_opacity_drag_recorded = response.dragging;
+        }
+        if response.changed {
+            self.document.as_mut().unwrap().active_layer_mut().opacity = opacity as u8;
             self.layer_changed();
         }
-        if self.ui.button(
-            framebuffer,
-            OPACITY_UP_BUTTON,
-            Rect::new(controls_x + 76, 378, 72, 32),
-            "MORE",
-        ) && layer_opacity < 255
-        {
-            self.checkpoint();
-            let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
-            *opacity = opacity.saturating_add(32);
-            self.layer_changed();
+        if !response.dragging {
+            self.layer_opacity_drag_recorded = false;
         }
 
         self.ui.label(framebuffer, window_width - 160, 424, "ORDER");
@@ -720,17 +700,20 @@ impl App {
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
-        let mut red = self.brush.settings.color.red();
-        let mut green = self.brush.settings.color.green();
-        let mut blue = self.brush.settings.color.blue();
-        let mut alpha = self.brush.settings.opacity;
+        let mut red = u32::from(self.brush.settings.color.red());
+        let mut green = u32::from(self.brush.settings.color.green());
+        let mut blue = u32::from(self.brush.settings.color.blue());
+        let mut alpha = u32::from(self.brush.settings.opacity);
         let preview = Rect::new(20, 108, 80, 48);
 
         self.ui.label(framebuffer, 20, 82, "COLOR");
         framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
         framebuffer.fill_rect(Rect::new(60, 108, 40, 24), Color::rgb(176, 176, 176));
         framebuffer.fill_rect(Rect::new(20, 132, 40, 24), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(preview, Color::rgba(red, green, blue, alpha));
+        framebuffer.fill_rect(
+            preview,
+            Color::rgba(red as u8, green as u8, blue as u8, alpha as u8),
+        );
         framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
         self.ui.label(
             framebuffer,
@@ -740,40 +723,56 @@ impl App {
         );
 
         self.ui.label(framebuffer, 20, 202, &format!("R {red}"));
-        let mut changed = self.ui.slider(
-            framebuffer,
-            RED_SLIDER,
-            Rect::new(8, 222, 104, 20),
-            &mut red,
-            Color::rgb(210, 60, 60),
-        );
+        let mut changed = self
+            .ui
+            .slider(
+                framebuffer,
+                RED_SLIDER,
+                Rect::new(8, 222, 104, 20),
+                &mut red,
+                255,
+                Color::rgb(210, 60, 60),
+            )
+            .changed;
         self.ui.label(framebuffer, 20, 252, &format!("G {green}"));
-        changed |= self.ui.slider(
-            framebuffer,
-            GREEN_SLIDER,
-            Rect::new(8, 272, 104, 20),
-            &mut green,
-            Color::rgb(55, 170, 90),
-        );
+        changed |= self
+            .ui
+            .slider(
+                framebuffer,
+                GREEN_SLIDER,
+                Rect::new(8, 272, 104, 20),
+                &mut green,
+                255,
+                Color::rgb(55, 170, 90),
+            )
+            .changed;
         self.ui.label(framebuffer, 20, 302, &format!("B {blue}"));
-        changed |= self.ui.slider(
-            framebuffer,
-            BLUE_SLIDER,
-            Rect::new(8, 322, 104, 20),
-            &mut blue,
-            Color::rgb(60, 120, 220),
-        );
+        changed |= self
+            .ui
+            .slider(
+                framebuffer,
+                BLUE_SLIDER,
+                Rect::new(8, 322, 104, 20),
+                &mut blue,
+                255,
+                Color::rgb(60, 120, 220),
+            )
+            .changed;
         self.ui.label(framebuffer, 20, 352, &format!("A {alpha}"));
-        changed |= self.ui.slider(
-            framebuffer,
-            ALPHA_SLIDER,
-            Rect::new(8, 372, 104, 20),
-            &mut alpha,
-            Color::rgb(225, 228, 232),
-        );
+        changed |= self
+            .ui
+            .slider(
+                framebuffer,
+                ALPHA_SLIDER,
+                Rect::new(8, 372, 104, 20),
+                &mut alpha,
+                255,
+                Color::rgb(225, 228, 232),
+            )
+            .changed;
         if changed {
-            self.brush.settings.color = Color::rgb(red, green, blue);
-            self.brush.settings.opacity = alpha;
+            self.brush.settings.color = Color::rgb(red as u8, green as u8, blue as u8);
+            self.brush.settings.opacity = alpha as u8;
             self.rerender = true;
         }
 
@@ -1174,5 +1173,32 @@ mod tests {
                 .get_pixel(1, 1),
             Some(red)
         );
+    }
+
+    #[test]
+    fn layer_opacity_drag_is_one_undoable_change() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+
+        app.handle_event(Event::MouseMove { x: 900, y: 388 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        app.handle_event(Event::MouseMove { x: 850, y: 388 });
+        app.render(&mut framebuffer);
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+
+        assert_eq!(app.undo_history.len(), 1);
+        assert!(app.document.as_ref().unwrap().active_layer().opacity < 255);
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().active_layer().opacity, 255);
     }
 }
