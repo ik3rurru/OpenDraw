@@ -1,4 +1,4 @@
 mod ffi;
 mod window;
 
-pub use window::run;
+pub use window::Window;

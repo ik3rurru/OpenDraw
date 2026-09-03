@@ -1,79 +1,138 @@
-use std::{ffi::c_void, io, mem::size_of, ptr};
+use std::{collections::VecDeque, ffi::c_void, io, mem::size_of, ptr};
 
-use crate::graphics::{Color, FrameBuffer, Rect};
+use crate::{
+    graphics::FrameBuffer,
+    platform::{Event, Key, MouseButton},
+};
 
 use super::ffi::*;
 
 #[derive(Default)]
 struct WindowState {
     framebuffer: FrameBuffer,
+    events: VecDeque<Event>,
+    pending_high_surrogate: Option<u16>,
+    destroyed: bool,
 }
 
-pub fn run() -> io::Result<()> {
-    let class_name = wide("OpenDrawWindow");
-    let title = wide("OpenDraw");
-    let mut state = Box::new(WindowState::default());
-
-    // SAFETY: Every pointer passed to Win32 remains valid for the duration documented
-    // below. WindowState is boxed so callbacks keep a stable address until WM_QUIT.
-    unsafe {
-        let instance = GetModuleHandleW(ptr::null());
-        if instance.is_null() {
-            return Err(io::Error::last_os_error());
+impl WindowState {
+    fn push_text(&mut self, unit: u16) {
+        // WM_CHAR delivers UTF-16 code units, so supplementary characters arrive
+        // as two messages and must be combined before entering the common API.
+        if (0xd800..=0xdbff).contains(&unit) {
+            self.pending_high_surrogate = Some(unit);
+            return;
         }
 
-        let window_class = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(window_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: instance,
-            hIcon: ptr::null_mut(),
-            hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-            hbrBackground: ptr::null_mut(),
-            lpszMenuName: ptr::null(),
-            lpszClassName: class_name.as_ptr(),
-        };
-
-        if RegisterClassW(&window_class) == 0 {
-            return Err(io::Error::last_os_error());
+        let units = self.pending_high_surrogate.take().into_iter().chain([unit]);
+        for character in char::decode_utf16(units) {
+            self.events.push_back(Event::TextInput {
+                character: character.unwrap_or(char::REPLACEMENT_CHARACTER),
+            });
         }
+    }
+}
 
-        let window = CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            title.as_ptr(),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            960,
-            640,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            instance,
-            (&mut *state as *mut WindowState).cast(),
-        );
-        if window.is_null() {
-            return Err(io::Error::last_os_error());
-        }
+pub struct Window {
+    handle: HWND,
+    state: Box<WindowState>,
+}
 
-        ShowWindow(window, SW_SHOW);
-        UpdateWindow(window);
+impl Window {
+    pub fn new() -> io::Result<Self> {
+        let class_name = wide("OpenDrawWindow");
+        let title = wide("OpenDraw");
+        let mut state = Box::new(WindowState::default());
 
-        let mut message = MSG::default();
-        loop {
-            match GetMessageW(&mut message, ptr::null_mut(), 0, 0) {
-                -1 => return Err(io::Error::last_os_error()),
-                0 => break,
-                _ => {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
+        // SAFETY: The UTF-16 strings live through window creation. WindowState is
+        // boxed, so the pointer stored in GWLP_USERDATA stays stable until Drop.
+        unsafe {
+            let instance = GetModuleHandleW(ptr::null());
+            if instance.is_null() {
+                return Err(io::Error::last_os_error());
             }
+
+            let window_class = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(window_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: ptr::null_mut(),
+                hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+                hbrBackground: ptr::null_mut(),
+                lpszMenuName: ptr::null(),
+                lpszClassName: class_name.as_ptr(),
+            };
+
+            if RegisterClassW(&window_class) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let handle = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                960,
+                640,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                (&mut *state as *mut WindowState).cast(),
+            );
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+
+            ShowWindow(handle, SW_SHOW);
+            UpdateWindow(handle);
+
+            Ok(Self { handle, state })
         }
     }
 
-    Ok(())
+    pub fn next_event(&mut self) -> io::Result<Option<Event>> {
+        loop {
+            if let Some(event) = self.state.events.pop_front() {
+                return Ok(Some(event));
+            }
+
+            let mut message = MSG::default();
+            let result = unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) };
+            match result {
+                -1 => return Err(io::Error::last_os_error()),
+                0 => return Ok(self.state.events.pop_front()),
+                _ => unsafe {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                },
+            };
+        }
+    }
+
+    pub fn framebuffer(&mut self) -> &mut FrameBuffer {
+        &mut self.state.framebuffer
+    }
+
+    pub fn present(&self) {
+        unsafe {
+            InvalidateRect(self.handle, ptr::null(), 0);
+            UpdateWindow(self.handle);
+        }
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        if !self.state.destroyed {
+            // SAFETY: handle belongs to this Window and state remains alive while
+            // DestroyWindow synchronously dispatches the final native messages.
+            unsafe { DestroyWindow(self.handle) };
+        }
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -100,11 +159,66 @@ unsafe extern "system" fn window_proc(
             if unsafe { GetClientRect(window, &mut rect) } != 0 {
                 let width = (rect.right - rect.left).max(0) as u32;
                 let height = (rect.bottom - rect.top).max(0) as u32;
-                let framebuffer = unsafe { &mut (*state).framebuffer };
-                framebuffer.resize(width, height);
-                draw_test_scene(framebuffer);
-                unsafe { InvalidateRect(window, ptr::null(), 0) };
+                let state = unsafe { &mut *state };
+                state.framebuffer.resize(width, height);
+                state.events.push_back(Event::Resized { width, height });
             }
+            0
+        }
+        WM_MOUSEMOVE if !state.is_null() => {
+            unsafe { &mut *state }.events.push_back(Event::MouseMove {
+                x: signed_low_word(lparam),
+                y: signed_high_word(lparam as usize),
+            });
+            0
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN if !state.is_null() => {
+            unsafe { SetCapture(window) };
+            unsafe { &mut *state }.events.push_back(Event::MouseDown {
+                button: mouse_button(message),
+            });
+            0
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP if !state.is_null() => {
+            unsafe { ReleaseCapture() };
+            unsafe { &mut *state }.events.push_back(Event::MouseUp {
+                button: mouse_button(message),
+            });
+            0
+        }
+        WM_MOUSEWHEEL if !state.is_null() => {
+            unsafe { &mut *state }.events.push_back(Event::MouseWheel {
+                delta: wheel_delta(wparam),
+            });
+            0
+        }
+        WM_KEYDOWN if !state.is_null() => {
+            unsafe { &mut *state }.events.push_back(Event::KeyDown {
+                key: key_from_virtual(wparam as u32),
+            });
+            0
+        }
+        WM_KEYUP if !state.is_null() => {
+            unsafe { &mut *state }.events.push_back(Event::KeyUp {
+                key: key_from_virtual(wparam as u32),
+            });
+            0
+        }
+        WM_SYSKEYDOWN | WM_SYSKEYUP if !state.is_null() => {
+            let event = if message == WM_SYSKEYDOWN {
+                Event::KeyDown {
+                    key: key_from_virtual(wparam as u32),
+                }
+            } else {
+                Event::KeyUp {
+                    key: key_from_virtual(wparam as u32),
+                }
+            };
+            unsafe { &mut *state }.events.push_back(event);
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
+        }
+        WM_CHAR if !state.is_null() => {
+            unsafe { &mut *state }.push_text(wparam as u16);
             0
         }
         WM_PAINT if !state.is_null() => {
@@ -117,11 +231,18 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_ERASEBKGND => 1,
-        WM_CLOSE => {
-            unsafe { DestroyWindow(window) };
+        WM_CLOSE if !state.is_null() => {
+            unsafe { &mut *state }
+                .events
+                .push_back(Event::CloseRequested);
             0
         }
         WM_DESTROY => {
+            if !state.is_null() {
+                let state = unsafe { &mut *state };
+                state.destroyed = true;
+                state.events.push_back(Event::CloseRequested);
+            }
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -129,26 +250,51 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-fn draw_test_scene(framebuffer: &mut FrameBuffer) {
-    framebuffer.checkerboard(24, Color::rgb(224, 224, 224), Color::rgb(176, 176, 176));
+fn signed_low_word(value: LPARAM) -> i32 {
+    // Mouse coordinates are signed 16-bit values packed into LPARAM.
+    value as u16 as i16 as i32
+}
 
-    let right = framebuffer.width.saturating_sub(1).min(i32::MAX as u32) as i32;
-    let bottom = framebuffer.height.saturating_sub(1).min(i32::MAX as u32) as i32;
-    let center_x = right / 2;
-    let center_y = bottom / 2;
+fn signed_high_word(value: usize) -> i32 {
+    (value >> 16) as u16 as i16 as i32
+}
 
-    framebuffer.draw_line(0, 0, right, bottom, Color::rgb(220, 50, 47));
-    framebuffer.draw_line(right, 0, 0, bottom, Color::rgb(38, 139, 210));
-    framebuffer.fill_rect(
-        Rect::new(center_x - 160, center_y - 90, 320, 180),
-        Color::rgba(108, 113, 196, 160),
-    );
-    framebuffer.draw_rect(
-        Rect::new(center_x - 160, center_y - 90, 320, 180),
-        Color::rgb(88, 90, 100),
-    );
-    framebuffer.fill_circle(center_x, center_y, 64, Color::rgba(133, 153, 0, 180));
-    framebuffer.draw_circle(center_x, center_y, 64, Color::rgb(255, 255, 255));
+fn wheel_delta(wparam: WPARAM) -> f32 {
+    signed_high_word(wparam) as f32 / 120.0
+}
+
+fn mouse_button(message: UINT) -> MouseButton {
+    match message {
+        WM_LBUTTONDOWN | WM_LBUTTONUP => MouseButton::Left,
+        WM_RBUTTONDOWN | WM_RBUTTONUP => MouseButton::Right,
+        _ => MouseButton::Middle,
+    }
+}
+
+fn key_from_virtual(key: u32) -> Key {
+    match key {
+        VK_BACK => Key::Backspace,
+        VK_TAB => Key::Tab,
+        VK_RETURN => Key::Enter,
+        VK_SHIFT => Key::Shift,
+        VK_CONTROL => Key::Control,
+        VK_MENU => Key::Alt,
+        VK_ESCAPE => Key::Escape,
+        VK_SPACE => Key::Space,
+        VK_PRIOR => Key::PageUp,
+        VK_NEXT => Key::PageDown,
+        VK_END => Key::End,
+        VK_HOME => Key::Home,
+        VK_LEFT => Key::Left,
+        VK_UP => Key::Up,
+        VK_RIGHT => Key::Right,
+        VK_DOWN => Key::Down,
+        VK_DELETE => Key::Delete,
+        0x30..=0x39 => Key::Digit((key - 0x30) as u8),
+        0x41..=0x5a => Key::Letter(char::from_u32(key).unwrap()),
+        0x70..=0x87 => Key::Function((key - 0x70 + 1) as u8),
+        _ => Key::Unknown(key),
+    }
 }
 
 unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
@@ -204,4 +350,26 @@ unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translates_native_input_without_leaking_win32_types() {
+        let coordinates = (((-20_i16 as u16 as u32) << 16) | -10_i16 as u16 as u32) as isize;
+        assert_eq!(signed_low_word(coordinates), -10);
+        assert_eq!(signed_high_word(coordinates as usize), -20);
+        assert_eq!(wheel_delta((120_u32 << 16) as usize), 1.0);
+        assert_eq!(key_from_virtual(0x41), Key::Letter('A'));
+
+        let mut state = WindowState::default();
+        state.push_text(0xd83d);
+        state.push_text(0xde00);
+        assert_eq!(
+            state.events.pop_front(),
+            Some(Event::TextInput { character: '😀' })
+        );
+    }
 }
