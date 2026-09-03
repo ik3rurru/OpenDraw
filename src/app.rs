@@ -36,7 +36,7 @@ const REDO_BUTTON: u32 = 32;
 const COLOR_SQUARE: u32 = 33;
 const HUE_SLIDER: u32 = 34;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
-const EDITOR_LEFT_WIDTH: u32 = 248;
+const EDITOR_LEFT_WIDTH: u32 = 120;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -316,10 +316,6 @@ impl App {
         );
         self.ui.panel(
             framebuffer,
-            Rect::new(120, 56, 128, self.window_size.1.saturating_sub(56)),
-        );
-        self.ui.panel(
-            framebuffer,
             Rect::new(
                 window_width - 180,
                 56,
@@ -332,7 +328,7 @@ impl App {
             Rect::new(
                 EDITOR_LEFT_WIDTH as i32,
                 window_height - 36,
-                self.window_size.0.saturating_sub(428),
+                self.window_size.0.saturating_sub(300),
                 36,
             ),
         );
@@ -350,11 +346,11 @@ impl App {
         {
             self.redo();
         }
-        self.ui.label(framebuffer, 20, 82, "TOOLS");
+        self.ui.label(framebuffer, 20, 66, "TOOLS");
         if self.ui.button(
             framebuffer,
             SELECT_BRUSH_BUTTON,
-            Rect::new(8, 108, 104, 24),
+            Rect::new(8, 86, 104, 22),
             "BRUSH",
         ) {
             self.end_tool();
@@ -364,7 +360,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             SELECT_ERASER_BUTTON,
-            Rect::new(8, 134, 104, 24),
+            Rect::new(8, 109, 104, 22),
             "ERASER",
         ) {
             self.end_tool();
@@ -374,7 +370,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             SELECT_EYEDROPPER_BUTTON,
-            Rect::new(8, 160, 104, 24),
+            Rect::new(8, 132, 104, 22),
             "PICKER",
         ) {
             self.end_tool();
@@ -384,7 +380,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             SELECT_BUCKET_BUTTON,
-            Rect::new(8, 186, 104, 24),
+            Rect::new(8, 155, 104, 22),
             "BUCKET",
         ) {
             self.end_tool();
@@ -393,12 +389,12 @@ impl App {
         }
 
         if matches!(self.active_tool, ActiveTool::Brush | ActiveTool::Eraser) {
-            let preview = Rect::new(20, 218, 80, 64);
-            let preview_radius = 2 + tool_radius * 26 / 127;
+            let preview = Rect::new(38, 185, 44, 44);
+            let preview_radius = 1 + tool_radius * 20 / 127;
             framebuffer.fill_rect(preview, Color::rgb(22, 25, 30));
             framebuffer.fill_circle(
                 60,
-                250,
+                207,
                 preview_radius,
                 match self.active_tool {
                     ActiveTool::Brush => Color::rgba(
@@ -411,18 +407,18 @@ impl App {
                     ActiveTool::Eyedropper | ActiveTool::Bucket => unreachable!(),
                 },
             );
-            framebuffer.draw_circle(60, 250, preview_radius, Color::rgb(255, 255, 255));
+            framebuffer.draw_circle(60, 207, preview_radius, Color::rgb(255, 255, 255));
             framebuffer.draw_rect(preview, Color::rgb(120, 130, 145));
 
-            self.ui.label(framebuffer, 20, 292, "SIZE");
-            self.ui.label(framebuffer, 76, 292, &format!("{tool_size}"));
+            self.ui.label(framebuffer, 20, 237, "SIZE");
+            self.ui.label(framebuffer, 76, 237, &format!("{tool_size}"));
             let mut radius = tool_radius;
             if self
                 .ui
                 .slider(
                     framebuffer,
                     TOOL_SIZE_SLIDER,
-                    Rect::new(8, 314, 104, 20),
+                    Rect::new(8, 255, 104, 16),
                     &mut radius,
                     127,
                     Color::rgb(90, 155, 230),
@@ -439,11 +435,11 @@ impl App {
         }
 
         match self.active_tool {
-            ActiveTool::Eyedropper => self.ui.label(framebuffer, 20, 218, "VISIBLE"),
-            ActiveTool::Bucket => self.ui.label(framebuffer, 20, 218, "ACTIVE"),
+            ActiveTool::Eyedropper => self.ui.label(framebuffer, 20, 185, "VISIBLE"),
+            ActiveTool::Bucket => self.ui.label(framebuffer, 20, 185, "ACTIVE"),
             _ => {}
         }
-        let alpha_y = 346;
+        let alpha_y = 279;
 
         self.ui.label(
             framebuffer,
@@ -458,7 +454,7 @@ impl App {
                 .slider(
                     framebuffer,
                     TOOL_OPACITY_SLIDER,
-                    Rect::new(8, alpha_y + 24, 104, 20),
+                    Rect::new(8, alpha_y + 18, 104, 16),
                     &mut opacity,
                     255,
                     Color::rgb(225, 228, 232),
@@ -654,7 +650,7 @@ impl App {
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
-        self.ui.label(framebuffer, 20, 402, "COLOR");
+        self.ui.label(framebuffer, 20, 321, "COLOR");
 
         let (_, saturation, value) = self.brush.settings.color.to_hsv();
         let mut saturation = u32::from(saturation);
@@ -663,18 +659,18 @@ impl App {
         let color_changed = self.ui.color_square(
             framebuffer,
             COLOR_SQUARE,
-            Rect::new(8, 424, 104, 104),
+            Rect::new(8, 339, 104, 104),
             hue,
             &mut saturation,
             &mut value,
         );
-        self.ui.label(framebuffer, 20, 536, &format!("H {hue}"));
+        self.ui.label(framebuffer, 20, 451, &format!("H {hue}"));
         let hue_changed = self
             .ui
             .hue_slider(
                 framebuffer,
                 HUE_SLIDER,
-                Rect::new(8, 556, 104, 20),
+                Rect::new(8, 469, 104, 16),
                 &mut hue,
             )
             .changed;
@@ -688,10 +684,10 @@ impl App {
         let mut green = u32::from(self.brush.settings.color.green());
         let mut blue = u32::from(self.brush.settings.color.blue());
         let alpha = self.brush.settings.opacity;
-        let preview = Rect::new(140, 402, 80, 32);
+        let preview = Rect::new(20, 493, 80, 20);
         framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
-        framebuffer.fill_rect(Rect::new(180, 402, 40, 16), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(Rect::new(140, 418, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(60, 493, 40, 10), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(20, 503, 40, 10), Color::rgb(176, 176, 176));
         framebuffer.fill_rect(
             preview,
             Color::rgba(red as u8, green as u8, blue as u8, alpha),
@@ -699,42 +695,42 @@ impl App {
         framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
         self.ui.label(
             framebuffer,
-            140,
-            442,
+            12,
+            519,
             &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
         );
 
-        self.ui.label(framebuffer, 140, 470, &format!("R {red}"));
+        self.ui.label(framebuffer, 8, 540, &format!("R{red}"));
         let mut changed = self
             .ui
             .slider(
                 framebuffer,
                 RED_SLIDER,
-                Rect::new(128, 490, 104, 18),
+                Rect::new(60, 538, 52, 16),
                 &mut red,
                 255,
                 Color::rgb(210, 60, 60),
             )
             .changed;
-        self.ui.label(framebuffer, 140, 516, &format!("G {green}"));
+        self.ui.label(framebuffer, 8, 560, &format!("G{green}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 GREEN_SLIDER,
-                Rect::new(128, 536, 104, 18),
+                Rect::new(60, 558, 52, 16),
                 &mut green,
                 255,
                 Color::rgb(55, 170, 90),
             )
             .changed;
-        self.ui.label(framebuffer, 140, 562, &format!("B {blue}"));
+        self.ui.label(framebuffer, 8, 580, &format!("B{blue}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 BLUE_SLIDER,
-                Rect::new(128, 582, 104, 18),
+                Rect::new(60, 578, 52, 16),
                 &mut blue,
                 255,
                 Color::rgb(60, 120, 220),
@@ -977,7 +973,7 @@ impl App {
         Rect::new(
             EDITOR_LEFT_WIDTH as i32,
             56,
-            self.window_size.0.saturating_sub(428),
+            self.window_size.0.saturating_sub(300),
             self.window_size.1.saturating_sub(92),
         )
     }
@@ -1176,7 +1172,7 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         framebuffer.resize(1000, 700);
 
-        app.handle_event(Event::MouseMove { x: 111, y: 424 });
+        app.handle_event(Event::MouseMove { x: 111, y: 339 });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
