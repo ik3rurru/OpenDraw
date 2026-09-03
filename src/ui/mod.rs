@@ -78,6 +78,12 @@ impl UiContext {
         self.focused = None;
     }
 
+    pub fn release_pointer(&mut self) {
+        self.left_down = false;
+        self.mouse_pressed_at = None;
+        self.dragging = None;
+    }
+
     pub fn panel(&self, framebuffer: &mut FrameBuffer, rect: Rect) {
         framebuffer.fill_rect(rect, Color::rgba(35, 39, 46, 245));
         framebuffer.draw_rect(rect, Color::rgb(88, 94, 105));

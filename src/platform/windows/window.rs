@@ -1,4 +1,12 @@
-use std::{collections::VecDeque, ffi::c_void, io, mem::size_of, ptr};
+use std::{
+    collections::VecDeque,
+    ffi::{OsString, c_void},
+    io,
+    mem::size_of,
+    os::windows::ffi::OsStringExt,
+    path::PathBuf,
+    ptr,
+};
 
 use crate::{
     graphics::FrameBuffer,
@@ -142,6 +150,76 @@ impl Window {
             InvalidateRect(self.handle, ptr::null(), 0);
             UpdateWindow(self.handle);
         }
+    }
+
+    pub fn open_document_path(&self) -> io::Result<Option<PathBuf>> {
+        self.document_path(false)
+    }
+
+    pub fn save_document_path(&self) -> io::Result<Option<PathBuf>> {
+        self.document_path(true)
+    }
+
+    fn document_path(&self, save: bool) -> io::Result<Option<PathBuf>> {
+        // SAFETY: ReleaseCapture takes no pointers. A framebuffer button activates
+        // on mouse-down, so the modal dialog must own subsequent pointer input.
+        unsafe { ReleaseCapture() };
+        let mut path = [0_u16; 32_768];
+        let filter = wide("OpenDraw (*.odraw)\0*.odraw\0All files (*.*)\0*.*\0");
+        let title = wide(if save {
+            "Save OpenDraw document"
+        } else {
+            "Open OpenDraw document"
+        });
+        let extension = wide("odraw");
+        let mut dialog = OPENFILENAMEW {
+            lStructSize: size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: self.handle,
+            lpstrFilter: filter.as_ptr(),
+            nFilterIndex: 1,
+            lpstrFile: path.as_mut_ptr(),
+            nMaxFile: path.len() as u32,
+            lpstrTitle: title.as_ptr(),
+            lpstrDefExt: extension.as_ptr(),
+            Flags: OFN_EXPLORER
+                | OFN_NOCHANGEDIR
+                | OFN_PATHMUSTEXIST
+                | OFN_HIDEREADONLY
+                | if save {
+                    OFN_OVERWRITEPROMPT
+                } else {
+                    OFN_FILEMUSTEXIST
+                },
+            ..OPENFILENAMEW::default()
+        };
+
+        // SAFETY: OPENFILENAMEW and every UTF-16 buffer it references remain alive
+        // for the synchronous modal call. nMaxFile matches the writable path buffer.
+        let accepted = unsafe {
+            if save {
+                GetSaveFileNameW(&mut dialog)
+            } else {
+                GetOpenFileNameW(&mut dialog)
+            }
+        };
+        if accepted == 0 {
+            // SAFETY: this takes no pointers and reads the calling thread's error
+            // state immediately after the failed common-dialog call.
+            let code = unsafe { CommDlgExtendedError() };
+            return if code == 0 {
+                Ok(None)
+            } else {
+                Err(io::Error::other(format!(
+                    "Windows file dialog failed with code 0x{code:08X}"
+                )))
+            };
+        }
+
+        let length = path
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(path.len());
+        Ok(Some(PathBuf::from(OsString::from_wide(&path[..length]))))
     }
 }
 

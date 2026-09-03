@@ -1,5 +1,6 @@
 mod app;
 mod document;
+mod file;
 mod graphics;
 mod platform;
 mod tools;
@@ -31,6 +32,33 @@ fn run() -> std::io::Result<()> {
         }
         app.render(window.framebuffer());
         window.present();
+        if let Some(command) = app.take_file_command() {
+            let path = match command {
+                app::FileCommand::Open => window.open_document_path(),
+                app::FileCommand::Save => app
+                    .document_path()
+                    .map(|path| Ok(Some(path.to_path_buf())))
+                    .unwrap_or_else(|| window.save_document_path()),
+            };
+            match path {
+                Ok(Some(path)) => {
+                    let result = match command {
+                        app::FileCommand::Open => app.open_document(&path),
+                        app::FileCommand::Save => app.save_document(&path),
+                    };
+                    if let Err(error) = result {
+                        eprintln!("OpenDraw: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("OpenDraw: {error}");
+                    app.report_file_dialog_error();
+                }
+            }
+            app.render(window.framebuffer());
+            window.present();
+        }
     }
 
     Ok(())

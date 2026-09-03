@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, zoom y desplazamiento en Windows.
+Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, archivos `.odraw`, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -32,3 +32,6 @@ el campo `NAME` permite renombrarla y la rueda recorre listas largas. También p
 añadir, eliminar, ordenar y ajustar con un slider la opacidad de la capa activa.
 
 `UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.
+Los botones de carpeta y disquete permiten abrir y guardar documentos `.odraw` mediante
+los diálogos nativos de Windows; también pueden usarse `Ctrl+O` y `Ctrl+S`. El formato
+versionado conserva dimensiones, capas, nombres, visibilidad, opacidad y píxeles.

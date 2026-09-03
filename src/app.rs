@@ -1,5 +1,8 @@
+use std::path::{Path, PathBuf};
+
 use crate::{
     document::{CanvasView, Document, DocumentError, Layer},
+    file::{self, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
     tools::{BrushTool, EraserTool, Tool},
@@ -33,6 +36,8 @@ const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
 const COLOR_SQUARE: u32 = 33;
 const HUE_SLIDER: u32 = 34;
+const OPEN_DOCUMENT_BUTTON: u32 = 35;
+const SAVE_DOCUMENT_BUTTON: u32 = 36;
 const LAYER_ROW_BASE: u32 = 1_000;
 const LAYER_VISIBILITY_BASE: u32 = 2_000;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
@@ -69,6 +74,14 @@ enum EditorIcon {
     ArrowRight,
     Add,
     Trash,
+    Folder,
+    Save,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileCommand {
+    Open,
+    Save,
 }
 
 pub struct App {
@@ -94,6 +107,8 @@ pub struct App {
     layer_scroll: usize,
     layer_name_edit_recorded: Option<usize>,
     layer_opacity_drag_recorded: bool,
+    pending_file_command: Option<FileCommand>,
+    document_path: Option<PathBuf>,
     editor_notice: Option<&'static str>,
     rerender: bool,
 }
@@ -123,6 +138,8 @@ impl App {
             layer_scroll: 0,
             layer_name_edit_recorded: None,
             layer_opacity_drag_recorded: false,
+            pending_file_command: None,
+            document_path: None,
             editor_notice: None,
             rerender: false,
         }
@@ -130,6 +147,63 @@ impl App {
 
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    pub fn take_file_command(&mut self) -> Option<FileCommand> {
+        let command = self.pending_file_command.take();
+        if command.is_some() {
+            self.ui.release_pointer();
+        }
+        command
+    }
+
+    pub fn document_path(&self) -> Option<&Path> {
+        self.document_path.as_deref()
+    }
+
+    pub fn save_document(&mut self, path: &Path) -> Result<(), OdrawError> {
+        let result = file::save(self.document.as_ref().unwrap(), path);
+        self.editor_notice = Some(match &result {
+            Ok(()) => "DOCUMENT SAVED",
+            Err(error) => Self::file_error_notice(error),
+        });
+        if result.is_ok() {
+            self.document_path = Some(path.to_path_buf());
+        }
+        self.rerender = true;
+        result
+    }
+
+    pub fn open_document(&mut self, path: &Path) -> Result<(), OdrawError> {
+        let document = match file::load(path) {
+            Ok(document) => document,
+            Err(error) => {
+                self.editor_notice = Some(Self::file_error_notice(&error));
+                self.rerender = true;
+                return Err(error);
+            }
+        };
+        self.end_tool();
+        self.canvas_view = CanvasView::fit(&document, self.editor_viewport());
+        self.document = Some(document);
+        self.document_path = Some(path.to_path_buf());
+        self.validation_error = None;
+        self.state = AppState::Editor;
+        self.panning = false;
+        self.undo_history.clear();
+        self.redo_history.clear();
+        self.layer_scroll = 0;
+        self.layer_name_edit_recorded = None;
+        self.layer_opacity_drag_recorded = false;
+        self.editor_notice = Some("DOCUMENT OPENED");
+        self.ui.clear_focus();
+        self.rerender = true;
+        Ok(())
+    }
+
+    pub fn report_file_dialog_error(&mut self) {
+        self.editor_notice = Some("FILE DIALOG FAILED");
+        self.rerender = true;
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -209,6 +283,14 @@ impl App {
             Event::KeyDown {
                 key: Key::Letter('Y'),
             } if self.control_down && self.state == AppState::Editor => self.redo(),
+            Event::KeyDown {
+                key: Key::Letter('O'),
+            } if self.control_down => self.pending_file_command = Some(FileCommand::Open),
+            Event::KeyDown {
+                key: Key::Letter('S'),
+            } if self.control_down && self.state == AppState::Editor => {
+                self.pending_file_command = Some(FileCommand::Save)
+            }
             _ => {}
         }
     }
@@ -293,7 +375,7 @@ impl App {
             self.rerender = true;
         }
 
-        if let Some(error) = self.validation_error {
+        if let Some(error) = self.validation_error.or(self.editor_notice) {
             self.ui.colored_label(
                 framebuffer,
                 panel.x + 28,
@@ -303,6 +385,14 @@ impl App {
             );
         }
 
+        if self.ui.button(
+            framebuffer,
+            OPEN_DOCUMENT_BUTTON,
+            Rect::new(panel.x + 28, panel.y + 356, 144, 48),
+            "OPEN",
+        ) {
+            self.pending_file_command = Some(FileCommand::Open);
+        }
         if self.ui.button(
             framebuffer,
             CANCEL_BUTTON,
@@ -383,6 +473,22 @@ impl App {
             EditorIcon::ArrowRight,
         ) {
             self.redo();
+        }
+        if self.icon_button(
+            framebuffer,
+            OPEN_DOCUMENT_BUTTON,
+            Rect::new(348, 9, 48, 38),
+            EditorIcon::Folder,
+        ) {
+            self.pending_file_command = Some(FileCommand::Open);
+        }
+        if self.icon_button(
+            framebuffer,
+            SAVE_DOCUMENT_BUTTON,
+            Rect::new(404, 9, 48, 38),
+            EditorIcon::Save,
+        ) {
+            self.pending_file_command = Some(FileCommand::Save);
         }
         self.ui.label(framebuffer, 20, 66, "TOOLS");
         if self.icon_button(
@@ -661,7 +767,11 @@ impl App {
                 EDITOR_LEFT_WIDTH as i32 + 172,
                 window_height - 25,
                 notice,
-                Color::rgb(230, 90, 80),
+                if matches!(notice, "DOCUMENT SAVED" | "DOCUMENT OPENED") {
+                    Color::rgb(90, 205, 130)
+                } else {
+                    Color::rgb(230, 90, 80)
+                },
             );
         }
 
@@ -1020,6 +1130,28 @@ impl App {
                 framebuffer.draw_line(x - 2, y - 2, x - 2, y + 6, color);
                 framebuffer.draw_line(x + 2, y - 2, x + 2, y + 6, color);
             }
+            EditorIcon::Folder => {
+                framebuffer.draw_line(x - 12, y - 7, x - 4, y - 7, color);
+                framebuffer.draw_line(x - 4, y - 7, x, y - 11, color);
+                framebuffer.draw_line(x, y - 11, x + 7, y - 11, color);
+                framebuffer.draw_line(x + 7, y - 11, x + 10, y - 7, color);
+                framebuffer.draw_rect(Rect::new(x - 12, y - 7, 25, 17), color);
+            }
+            EditorIcon::Save => {
+                framebuffer.draw_rect(Rect::new(x - 10, y - 11, 21, 22), color);
+                framebuffer.draw_rect(Rect::new(x - 5, y - 9, 10, 7), color);
+                framebuffer.draw_rect(Rect::new(x - 6, y + 3, 13, 8), color);
+            }
+        }
+    }
+
+    fn file_error_notice(error: &OdrawError) -> &'static str {
+        match error {
+            OdrawError::UnsupportedVersion(_) => "UNSUPPORTED ODRAW VERSION",
+            OdrawError::UnexpectedEndOfFile | OdrawError::InvalidFile => "INVALID ODRAW FILE",
+            OdrawError::InvalidDimensions => "INVALID DOCUMENT SIZE",
+            OdrawError::AllocationFailed => "NOT ENOUGH MEMORY",
+            OdrawError::Io(_) => "FILE ERROR",
         }
     }
 
@@ -1124,6 +1256,7 @@ impl App {
 
         self.canvas_view = CanvasView::fit(&document, self.editor_viewport());
         self.document = Some(document);
+        self.document_path = None;
         self.validation_error = None;
         self.state = AppState::Editor;
         self.panning = false;
@@ -1597,5 +1730,41 @@ mod tests {
 
         assert_eq!(app.brush.settings.color, Color::rgb(255, 0, 0));
         assert!(app.undo_history.is_empty());
+    }
+
+    #[test]
+    fn saves_opens_and_preserves_the_current_document_on_invalid_files() {
+        let path = std::env::temp_dir().join(format!(
+            "opendraw-{}-document-roundtrip.odraw",
+            std::process::id()
+        ));
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        let mut document = Document::new(3, 2, Color::rgb(255, 255, 255)).unwrap();
+        document.active_layer_mut().name = String::from("SAVED");
+        document.add_layer().unwrap();
+        document.active_layer_mut().opacity = 91;
+        app.document = Some(document);
+
+        app.handle_event(Event::KeyDown { key: Key::Control });
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('S'),
+        });
+        assert_eq!(app.take_file_command(), Some(FileCommand::Save));
+        app.save_document(&path).unwrap();
+        assert_eq!(app.document_path(), Some(path.as_path()));
+        app.document.as_mut().unwrap().layers[0].name = String::from("CHANGED");
+        app.checkpoint();
+        app.open_document(&path).unwrap();
+        assert_eq!(app.document.as_ref().unwrap().layers[0].name, "SAVED");
+        assert_eq!(app.document.as_ref().unwrap().layers[1].opacity, 91);
+        assert!(app.undo_history.is_empty());
+
+        app.document.as_mut().unwrap().layers[0].name = String::from("CURRENT");
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(app.open_document(&path).is_err());
+        assert_eq!(app.document.as_ref().unwrap().layers[0].name, "CURRENT");
+        std::fs::remove_file(path).unwrap();
     }
 }

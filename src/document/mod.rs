@@ -7,7 +7,7 @@ use crate::graphics::Color;
 pub use canvas_view::CanvasView;
 
 pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
-const MAX_LAYERS: usize = 256;
+pub(crate) const MAX_LAYERS: usize = 256;
 
 #[derive(Clone)]
 pub struct Document {
@@ -63,6 +63,45 @@ impl Document {
             }],
             active_layer: 0,
             next_layer_number: 2,
+        })
+    }
+
+    pub(crate) fn from_layers(
+        width: u32,
+        height: u32,
+        layers: Vec<Layer>,
+        active_layer: usize,
+    ) -> Result<Self, DocumentError> {
+        let pixels_per_layer = u64::from(width) * u64::from(height);
+        let expected = usize::try_from(pixels_per_layer).map_err(|_| DocumentError::TooLarge)?;
+        if width == 0
+            || height == 0
+            || layers.is_empty()
+            || layers.len() > MAX_LAYERS
+            || active_layer >= layers.len()
+            || pixels_per_layer
+                .checked_mul(layers.len() as u64)
+                .is_none_or(|total| total > MAX_PIXELS)
+            || layers.iter().any(|layer| {
+                layer.pixels.width != width
+                    || layer.pixels.height != height
+                    || layer.pixels.pixels.len() != expected
+            })
+        {
+            return Err(DocumentError::InvalidDimensions);
+        }
+        let next_layer_number = layers
+            .iter()
+            .filter_map(|layer| layer.name.strip_prefix("LAYER ")?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(layers.len() as u32)
+            .saturating_add(1);
+        Ok(Self {
+            width,
+            height,
+            layers,
+            active_layer,
+            next_layer_number,
         })
     }
 

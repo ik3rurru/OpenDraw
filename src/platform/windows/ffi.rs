@@ -73,6 +73,12 @@ pub const VK_DELETE: u32 = 0x2e;
 pub const BI_RGB: DWORD = 0;
 pub const DIB_RGB_COLORS: UINT = 0;
 pub const SRCCOPY: DWORD = 0x00cc_0020;
+pub const OFN_OVERWRITEPROMPT: DWORD = 0x0000_0002;
+pub const OFN_HIDEREADONLY: DWORD = 0x0000_0004;
+pub const OFN_NOCHANGEDIR: DWORD = 0x0000_0008;
+pub const OFN_PATHMUSTEXIST: DWORD = 0x0000_0800;
+pub const OFN_FILEMUSTEXIST: DWORD = 0x0000_1000;
+pub const OFN_EXPLORER: DWORD = 0x0008_0000;
 
 pub type WndProc = Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>;
 
@@ -180,9 +186,51 @@ pub struct BITMAPINFO {
     pub bmiColors: [RGBQUAD; 1],
 }
 
+#[repr(C)]
+pub struct OPENFILENAMEW {
+    pub lStructSize: DWORD,
+    pub hwndOwner: HWND,
+    pub hInstance: HINSTANCE,
+    pub lpstrFilter: *const u16,
+    pub lpstrCustomFilter: *mut u16,
+    pub nMaxCustFilter: DWORD,
+    pub nFilterIndex: DWORD,
+    pub lpstrFile: *mut u16,
+    pub nMaxFile: DWORD,
+    pub lpstrFileTitle: *mut u16,
+    pub nMaxFileTitle: DWORD,
+    pub lpstrInitialDir: *const u16,
+    pub lpstrTitle: *const u16,
+    pub Flags: DWORD,
+    pub nFileOffset: WORD,
+    pub nFileExtension: WORD,
+    pub lpstrDefExt: *const u16,
+    pub lCustData: LPARAM,
+    pub lpfnHook: *mut c_void,
+    pub lpTemplateName: *const u16,
+    pub pvReserved: *mut c_void,
+    pub dwReserved: DWORD,
+    pub FlagsEx: DWORD,
+}
+
+impl Default for OPENFILENAMEW {
+    fn default() -> Self {
+        // SAFETY: this C struct contains only integers and nullable handles/pointers;
+        // Win32 requires every unused field to be zero.
+        unsafe { std::mem::zeroed() }
+    }
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetModuleHandleW(module_name: *const u16) -> HINSTANCE;
+}
+
+#[link(name = "comdlg32")]
+unsafe extern "system" {
+    pub fn GetOpenFileNameW(dialog: *mut OPENFILENAMEW) -> BOOL;
+    pub fn GetSaveFileNameW(dialog: *mut OPENFILENAMEW) -> BOOL;
+    pub fn CommDlgExtendedError() -> DWORD;
 }
 
 #[link(name = "user32")]
