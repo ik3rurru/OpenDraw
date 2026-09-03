@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: documentos raster con capas, herramientas de pintura, selector RGB, zoom y desplazamiento en Windows.
+Estado actual: documentos raster con capas, herramientas de pintura, selector RGB, historial, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -26,3 +26,5 @@ previa y la representación hexadecimal del color actual.
 
 El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y cambiar
 la opacidad de las capas.
+
+`UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.

@@ -9,6 +9,7 @@ pub use canvas_view::CanvasView;
 pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 const MAX_LAYERS: usize = 256;
 
+#[derive(Clone)]
 pub struct Document {
     pub width: u32,
     pub height: u32,
@@ -17,6 +18,7 @@ pub struct Document {
     next_layer_number: u32,
 }
 
+#[derive(Clone)]
 pub struct Layer {
     pub name: String,
     pub visible: bool,
@@ -24,6 +26,7 @@ pub struct Layer {
     pub pixels: PixelBuffer,
 }
 
+#[derive(Clone)]
 pub struct PixelBuffer {
     pub width: u32,
     pub height: u32,

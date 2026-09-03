@@ -37,6 +37,9 @@ const GREEN_SLIDER: u32 = 27;
 const BLUE_SLIDER: u32 = 28;
 const ALPHA_SLIDER: u32 = 29;
 const COLOR_PICKER_DONE_BUTTON: u32 = 30;
+const UNDO_BUTTON: u32 = 31;
+const REDO_BUTTON: u32 = 32;
+const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -75,6 +78,9 @@ pub struct App {
     eraser: EraserTool,
     active_tool: ActiveTool,
     color_picker_open: bool,
+    control_down: bool,
+    undo_history: Vec<Document>,
+    redo_history: Vec<Document>,
     editor_notice: Option<&'static str>,
     rerender: bool,
 }
@@ -98,6 +104,9 @@ impl App {
             eraser: EraserTool::default(),
             active_tool: ActiveTool::Brush,
             color_picker_open: false,
+            control_down: false,
+            undo_history: Vec::new(),
+            redo_history: Vec::new(),
             editor_notice: None,
             rerender: false,
         }
@@ -160,6 +169,14 @@ impl App {
                 self.color_picker_open = false;
                 self.ui.clear_focus();
             }
+            Event::KeyDown { key: Key::Control } => self.control_down = true,
+            Event::KeyUp { key: Key::Control } => self.control_down = false,
+            Event::KeyDown {
+                key: Key::Letter('Z'),
+            } if self.control_down && self.state == AppState::Editor => self.undo(),
+            Event::KeyDown {
+                key: Key::Letter('Y'),
+            } if self.control_down && self.state == AppState::Editor => self.redo(),
             _ => {}
         }
     }
@@ -337,6 +354,18 @@ impl App {
         );
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
+        if self
+            .ui
+            .button(framebuffer, UNDO_BUTTON, Rect::new(140, 9, 96, 38), "UNDO")
+        {
+            self.undo();
+        }
+        if self
+            .ui
+            .button(framebuffer, REDO_BUTTON, Rect::new(244, 9, 96, 38), "REDO")
+        {
+            self.redo();
+        }
         if self.color_picker_open {
             self.render_color_picker(framebuffer);
             return;
@@ -564,6 +593,7 @@ impl App {
             Rect::new(controls_x, 310, 148, 32),
             if layer_visible { "HIDE" } else { "SHOW" },
         ) {
+            self.checkpoint();
             let layer = self.document.as_mut().unwrap().active_layer_mut();
             layer.visible = !layer.visible;
             self.layer_changed();
@@ -580,7 +610,9 @@ impl App {
             OPACITY_DOWN_BUTTON,
             Rect::new(controls_x, 378, 72, 32),
             "LESS",
-        ) {
+        ) && layer_opacity > 0
+        {
+            self.checkpoint();
             let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
             *opacity = opacity.saturating_sub(32);
             self.layer_changed();
@@ -590,7 +622,9 @@ impl App {
             OPACITY_UP_BUTTON,
             Rect::new(controls_x + 76, 378, 72, 32),
             "MORE",
-        ) {
+        ) && layer_opacity < 255
+        {
+            self.checkpoint();
             let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
             *opacity = opacity.saturating_add(32);
             self.layer_changed();
@@ -602,7 +636,9 @@ impl App {
             MOVE_DOWN_BUTTON,
             Rect::new(controls_x, 446, 72, 32),
             "DOWN",
-        ) {
+        ) && layer_number > 1
+        {
+            self.checkpoint();
             self.document.as_mut().unwrap().move_active_down();
             self.layer_changed();
         }
@@ -611,7 +647,9 @@ impl App {
             MOVE_UP_BUTTON,
             Rect::new(controls_x + 76, 446, 72, 32),
             "UP",
-        ) {
+        ) && layer_number < layer_count
+        {
+            self.checkpoint();
             self.document.as_mut().unwrap().move_active_up();
             self.layer_changed();
         }
@@ -622,8 +660,13 @@ impl App {
             Rect::new(controls_x, 496, 72, 32),
             "ADD",
         ) {
-            self.editor_notice = match self.document.as_mut().unwrap().add_layer() {
-                Ok(()) => None,
+            let snapshot = self.document.as_ref().unwrap().clone();
+            let result = self.document.as_mut().unwrap().add_layer();
+            self.editor_notice = match result {
+                Ok(()) => {
+                    self.remember(snapshot);
+                    None
+                }
                 Err(DocumentError::AllocationFailed) => Some("NOT ENOUGH MEMORY"),
                 Err(_) => Some("LAYER LIMIT REACHED"),
             };
@@ -635,8 +678,13 @@ impl App {
             Rect::new(controls_x + 76, 496, 72, 32),
             "DELETE",
         ) {
-            self.editor_notice = (!self.document.as_mut().unwrap().remove_active_layer())
-                .then_some("KEEP ONE LAYER");
+            if layer_count > 1 {
+                self.checkpoint();
+                self.document.as_mut().unwrap().remove_active_layer();
+                self.editor_notice = None;
+            } else {
+                self.editor_notice = Some("KEEP ONE LAYER");
+            }
             self.rerender = true;
         }
 
@@ -743,6 +791,63 @@ impl App {
         self.ui.label(framebuffer, 20, 524, "MIDDLE");
     }
 
+    fn checkpoint(&mut self) {
+        let snapshot_bytes = Self::document_bytes(self.document.as_ref().unwrap());
+        self.prepare_history(snapshot_bytes);
+        self.undo_history
+            .push(self.document.as_ref().unwrap().clone());
+    }
+
+    fn remember(&mut self, snapshot: Document) {
+        let snapshot_bytes = Self::document_bytes(&snapshot);
+        self.prepare_history(snapshot_bytes);
+        self.undo_history.push(snapshot);
+    }
+
+    fn prepare_history(&mut self, snapshot_bytes: u64) {
+        self.redo_history.clear();
+        // ponytail: bounded snapshots; replace with diffs only when this depth is insufficient.
+        while !self.undo_history.is_empty()
+            && Self::history_bytes(&self.undo_history) + snapshot_bytes > HISTORY_BYTE_LIMIT
+        {
+            self.undo_history.remove(0);
+        }
+    }
+
+    fn undo(&mut self) {
+        let Some(previous) = self.undo_history.pop() else {
+            return;
+        };
+        self.end_tool();
+        let current = self.document.replace(previous).unwrap();
+        self.redo_history.push(current);
+        self.editor_notice = None;
+        self.rerender = true;
+    }
+
+    fn redo(&mut self) {
+        let Some(next) = self.redo_history.pop() else {
+            return;
+        };
+        self.end_tool();
+        let current = self.document.replace(next).unwrap();
+        self.undo_history.push(current);
+        self.editor_notice = None;
+        self.rerender = true;
+    }
+
+    fn history_bytes(history: &[Document]) -> u64 {
+        history.iter().map(Self::document_bytes).sum()
+    }
+
+    fn document_bytes(document: &Document) -> u64 {
+        document
+            .layers
+            .iter()
+            .map(|layer| layer.pixels.pixels.len() as u64 * std::mem::size_of::<u32>() as u64)
+            .sum()
+    }
+
     fn create_document(&mut self) {
         let Ok(width) = self.width_input.parse::<u32>() else {
             self.validation_error = Some("ENTER NUMERIC WIDTH");
@@ -788,6 +893,8 @@ impl App {
         self.panning = false;
         self.end_tool();
         self.color_picker_open = false;
+        self.undo_history.clear();
+        self.redo_history.clear();
         self.editor_notice = None;
         self.ui.clear_focus();
     }
@@ -835,6 +942,24 @@ impl App {
             self.brush.settings.color.blue(),
             self.brush.settings.opacity,
         );
+        let changes_document = match self.active_tool {
+            ActiveTool::Brush => self.brush.settings.opacity > 0,
+            ActiveTool::Eraser => self.eraser.settings.opacity > 0,
+            ActiveTool::Bucket => {
+                self.document
+                    .as_ref()
+                    .unwrap()
+                    .active_layer()
+                    .pixels
+                    .get_pixel(point.0, point.1)
+                    != Some(fill_color)
+            }
+            ActiveTool::Eyedropper => false,
+        };
+        if !changes_document {
+            return;
+        }
+        self.checkpoint();
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_down(pixels, point),
@@ -983,5 +1108,71 @@ mod tests {
             Color::rgb(expected.red(), expected.green(), expected.blue())
         );
         assert_eq!(app.brush.settings.opacity, expected.alpha());
+    }
+
+    #[test]
+    fn undo_and_redo_restore_snapshots_and_new_edits_clear_redo() {
+        let white = Color::rgb(255, 255, 255);
+        let black = Color::rgb(0, 0, 0);
+        let red = Color::rgb(255, 0, 0);
+        let mut app = App::new();
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(3, 3, white).unwrap());
+        app.checkpoint();
+        app.document
+            .as_mut()
+            .unwrap()
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(1, 1, 0, black);
+
+        app.handle_event(Event::KeyDown { key: Key::Control });
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('Z'),
+        });
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(1, 1),
+            Some(white)
+        );
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('Y'),
+        });
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(1, 1),
+            Some(black)
+        );
+
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('Z'),
+        });
+        app.checkpoint();
+        app.document
+            .as_mut()
+            .unwrap()
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(1, 1, 0, red);
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('Y'),
+        });
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(1, 1),
+            Some(red)
+        );
     }
 }
