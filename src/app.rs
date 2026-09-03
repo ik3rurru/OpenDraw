@@ -15,6 +15,7 @@ const CANCEL_BUTTON: u32 = 5;
 const CREATE_BUTTON: u32 = 6;
 const NEW_DOCUMENT_BUTTON: u32 = 7;
 const LAYER_OPACITY_SLIDER: u32 = 11;
+const LAYER_NAME_INPUT: u32 = 12;
 const MOVE_DOWN_BUTTON: u32 = 13;
 const MOVE_UP_BUTTON: u32 = 14;
 const ADD_LAYER_BUTTON: u32 = 15;
@@ -91,6 +92,7 @@ pub struct App {
     undo_history: Vec<Document>,
     redo_history: Vec<Document>,
     layer_scroll: usize,
+    layer_name_edit_recorded: Option<usize>,
     layer_opacity_drag_recorded: bool,
     editor_notice: Option<&'static str>,
     rerender: bool,
@@ -119,6 +121,7 @@ impl App {
             undo_history: Vec::new(),
             redo_history: Vec::new(),
             layer_scroll: 0,
+            layer_name_edit_recorded: None,
             layer_opacity_drag_recorded: false,
             editor_notice: None,
             rerender: false,
@@ -526,25 +529,46 @@ impl App {
 
         let controls_top = self.layer_controls_top();
         let controls_x = panel_x + 16;
-        let (active_layer, layer_count, layer_opacity) = {
+        let (active_layer, layer_count, layer_opacity, mut layer_name) = {
             let document = self.document.as_ref().unwrap();
             (
                 document.active_layer,
                 document.layers.len(),
                 document.active_layer().opacity,
+                document.active_layer().name.clone(),
             )
         };
+        let previous_name = layer_name.clone();
+        self.ui.label(framebuffer, controls_x, controls_top, "NAME");
+        let name_focused = self.ui.text_input(
+            framebuffer,
+            LAYER_NAME_INPUT,
+            Rect::new(controls_x, controls_top + 18, 188, 28),
+            &mut layer_name,
+        );
+        if layer_name != previous_name {
+            if self.layer_name_edit_recorded != Some(active_layer) {
+                self.checkpoint();
+                self.layer_name_edit_recorded = Some(active_layer);
+            }
+            self.document.as_mut().unwrap().layers[active_layer].name = layer_name;
+            self.editor_notice = None;
+            self.rerender = true;
+        }
+        if !name_focused {
+            self.layer_name_edit_recorded = None;
+        }
         self.ui.label(
             framebuffer,
             controls_x,
-            controls_top,
+            controls_top + 54,
             &format!("OPACITY {}%", (u16::from(layer_opacity) * 100 / 255)),
         );
         let mut opacity = u32::from(layer_opacity);
         let response = self.ui.slider(
             framebuffer,
             LAYER_OPACITY_SLIDER,
-            Rect::new(controls_x, controls_top + 20, 188, 18),
+            Rect::new(controls_x, controls_top + 74, 188, 18),
             &mut opacity,
             255,
             Color::rgb(225, 228, 232),
@@ -567,7 +591,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             MOVE_UP_BUTTON,
-            Rect::new(controls_x, controls_top + 48, 92, 28),
+            Rect::new(controls_x, controls_top + 102, 92, 28),
             "UP",
         ) && active_layer + 1 < layer_count
         {
@@ -579,7 +603,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             MOVE_DOWN_BUTTON,
-            Rect::new(controls_x + 96, controls_top + 48, 92, 28),
+            Rect::new(controls_x + 96, controls_top + 102, 92, 28),
             "DOWN",
         ) && active_layer > 0
         {
@@ -592,7 +616,7 @@ impl App {
         if self.icon_button(
             framebuffer,
             ADD_LAYER_BUTTON,
-            Rect::new(controls_x, controls_top + 84, 92, 28),
+            Rect::new(controls_x, controls_top + 138, 92, 28),
             EditorIcon::Add,
         ) {
             let snapshot = self.document.as_ref().unwrap().clone();
@@ -611,7 +635,7 @@ impl App {
         if self.icon_button(
             framebuffer,
             DELETE_LAYER_BUTTON,
-            Rect::new(controls_x + 96, controls_top + 84, 92, 28),
+            Rect::new(controls_x + 96, controls_top + 138, 92, 28),
             EditorIcon::Trash,
         ) {
             if layer_count > 1 {
@@ -842,10 +866,11 @@ impl App {
                 &self.document.as_ref().unwrap().layers[index],
                 thumbnail,
             );
+            let display_name: String = name.chars().take(8).collect();
             framebuffer.draw_text(
                 row_rect.x + 94,
                 row_rect.y + 9,
-                &name,
+                &display_name,
                 Color::rgb(235, 238, 242),
                 2,
             );
@@ -1028,6 +1053,7 @@ impl App {
         self.end_tool();
         let current = self.document.replace(previous).unwrap();
         self.redo_history.push(current);
+        self.layer_name_edit_recorded = None;
         self.reveal_active_layer();
         self.editor_notice = None;
         self.rerender = true;
@@ -1040,6 +1066,7 @@ impl App {
         self.end_tool();
         let current = self.document.replace(next).unwrap();
         self.undo_history.push(current);
+        self.layer_name_edit_recorded = None;
         self.reveal_active_layer();
         self.editor_notice = None;
         self.rerender = true;
@@ -1104,11 +1131,13 @@ impl App {
         self.undo_history.clear();
         self.redo_history.clear();
         self.layer_scroll = 0;
+        self.layer_name_edit_recorded = None;
         self.editor_notice = None;
         self.ui.clear_focus();
     }
 
     fn layer_changed(&mut self) {
+        self.layer_name_edit_recorded = None;
         self.editor_notice = None;
         self.rerender = true;
         self.end_tool();
@@ -1434,12 +1463,12 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         framebuffer.resize(1000, 700);
 
-        app.handle_event(Event::MouseMove { x: 900, y: 555 });
+        app.handle_event(Event::MouseMove { x: 900, y: 609 });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
         app.render(&mut framebuffer);
-        app.handle_event(Event::MouseMove { x: 810, y: 555 });
+        app.handle_event(Event::MouseMove { x: 810, y: 609 });
         app.render(&mut framebuffer);
         app.handle_event(Event::MouseUp {
             button: MouseButton::Left,
@@ -1450,6 +1479,44 @@ mod tests {
         assert!(app.document.as_ref().unwrap().active_layer().opacity < 255);
         app.undo();
         assert_eq!(app.document.as_ref().unwrap().active_layer().opacity, 255);
+    }
+
+    #[test]
+    fn layer_rename_is_one_undoable_edit() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+
+        app.handle_event(Event::MouseMove { x: 900, y: 555 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        for _ in 0..7 {
+            app.handle_event(Event::KeyDown {
+                key: Key::Backspace,
+            });
+            app.render(&mut framebuffer);
+        }
+        for character in "INK".chars() {
+            app.handle_event(Event::TextInput { character });
+        }
+        app.render(&mut framebuffer);
+
+        assert_eq!(app.document.as_ref().unwrap().active_layer().name, "INK");
+        assert_eq!(app.undo_history.len(), 1);
+        app.undo();
+        assert_eq!(
+            app.document.as_ref().unwrap().active_layer().name,
+            "LAYER 1"
+        );
     }
 
     #[test]

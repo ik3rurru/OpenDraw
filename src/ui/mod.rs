@@ -161,7 +161,7 @@ impl UiContext {
         id: u32,
         rect: Rect,
         value: &mut String,
-    ) {
+    ) -> bool {
         self.register_focus(id);
         let hovered = rect.contains(self.pointer.0, self.pointer.1);
         if let Some((x, y)) = self.mouse_pressed_at {
@@ -218,6 +218,7 @@ impl UiContext {
                 Color::rgb(225, 228, 232),
             );
         }
+        focused
     }
 
     pub fn slider(

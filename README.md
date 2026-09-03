@@ -28,7 +28,7 @@ junto a los sliders RGB y la representación hexadecimal.
 
 El panel derecho muestra las capas superpuestas de arriba abajo, con miniaturas del
 contenido. Haz clic en una fila para activarla o en su ojo para mostrarla y ocultarla;
-la rueda recorre listas largas. También permite añadir, eliminar, ordenar y ajustar
-con un slider la opacidad de la capa activa.
+el campo `NAME` permite renombrarla y la rueda recorre listas largas. También permite
+añadir, eliminar, ordenar y ajustar con un slider la opacidad de la capa activa.
 
 `UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.
