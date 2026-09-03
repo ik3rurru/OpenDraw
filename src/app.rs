@@ -31,6 +31,7 @@ const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
 const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
 const SELECT_EYEDROPPER_BUTTON: u32 = 24;
+const SELECT_BUCKET_BUTTON: u32 = 25;
 const BRUSH_COLORS: [Color; 4] = [
     Color::rgb(24, 24, 24),
     Color::rgb(210, 60, 60),
@@ -55,6 +56,7 @@ enum ActiveTool {
     Brush,
     Eraser,
     Eyedropper,
+    Bucket,
 }
 
 pub struct App {
@@ -293,7 +295,7 @@ impl App {
                 self.eraser.settings.radius,
                 self.eraser.settings.opacity,
             ),
-            ActiveTool::Eyedropper => ("EYEDROPPER", 0, self.brush.settings.opacity),
+            ActiveTool::Eyedropper | ActiveTool::Bucket => ("", 0, self.brush.settings.opacity),
         };
         let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
@@ -362,15 +364,25 @@ impl App {
             self.active_tool = ActiveTool::Eyedropper;
             self.rerender = true;
         }
+        if self.ui.button(
+            framebuffer,
+            SELECT_BUCKET_BUTTON,
+            Rect::new(8, 186, 104, 24),
+            "BUCKET",
+        ) {
+            self.end_tool();
+            self.active_tool = ActiveTool::Bucket;
+            self.rerender = true;
+        }
 
-        if self.active_tool != ActiveTool::Eyedropper {
+        if matches!(self.active_tool, ActiveTool::Brush | ActiveTool::Eraser) {
             self.ui
-                .label(framebuffer, 20, 192, &format!("{tool_name} SIZE"));
-            self.ui.label(framebuffer, 20, 216, &format!("{tool_size}"));
+                .label(framebuffer, 20, 218, &format!("{tool_name} SIZE"));
+            self.ui.label(framebuffer, 20, 242, &format!("{tool_size}"));
             if self.ui.button(
                 framebuffer,
                 BRUSH_SIZE_DOWN_BUTTON,
-                Rect::new(8, 238, 50, 32),
+                Rect::new(8, 264, 50, 32),
                 "LESS",
             ) {
                 match self.active_tool {
@@ -380,14 +392,14 @@ impl App {
                     ActiveTool::Eraser => {
                         self.eraser.settings.radius = self.eraser.settings.radius.saturating_sub(1)
                     }
-                    ActiveTool::Eyedropper => {}
+                    ActiveTool::Eyedropper | ActiveTool::Bucket => {}
                 }
                 self.rerender = true;
             }
             if self.ui.button(
                 framebuffer,
                 BRUSH_SIZE_UP_BUTTON,
-                Rect::new(62, 238, 50, 32),
+                Rect::new(62, 264, 50, 32),
                 "MORE",
             ) {
                 match self.active_tool {
@@ -397,39 +409,50 @@ impl App {
                     ActiveTool::Eraser => {
                         self.eraser.settings.radius = (self.eraser.settings.radius + 1).min(127)
                     }
-                    ActiveTool::Eyedropper => {}
+                    ActiveTool::Eyedropper | ActiveTool::Bucket => {}
                 }
                 self.rerender = true;
             }
         }
 
-        let alpha_y = match self.active_tool {
-            ActiveTool::Brush => {
-                self.ui.label(framebuffer, 20, 286, "COLOR");
-                framebuffer.fill_rect(Rect::new(88, 282, 20, 20), brush_color);
-                framebuffer.draw_rect(Rect::new(88, 282, 20, 20), Color::rgb(225, 228, 232));
-                self.ui.label(framebuffer, 20, 310, &brush_color_hex);
-                if self.ui.button(
+        match self.active_tool {
+            ActiveTool::Eyedropper => self.ui.label(framebuffer, 20, 218, "VISIBLE"),
+            ActiveTool::Bucket => self.ui.label(framebuffer, 20, 218, "ACTIVE"),
+            _ => {}
+        }
+        let color_y = match self.active_tool {
+            ActiveTool::Brush => Some(312),
+            ActiveTool::Eyedropper | ActiveTool::Bucket => Some(264),
+            ActiveTool::Eraser => None,
+        };
+        if let Some(color_y) = color_y {
+            self.ui.label(framebuffer, 20, color_y, "COLOR");
+            framebuffer.fill_rect(Rect::new(88, color_y - 4, 20, 20), brush_color);
+            framebuffer.draw_rect(
+                Rect::new(88, color_y - 4, 20, 20),
+                Color::rgb(225, 228, 232),
+            );
+            self.ui
+                .label(framebuffer, 20, color_y + 24, &brush_color_hex);
+            if self.active_tool != ActiveTool::Eyedropper
+                && self.ui.button(
                     framebuffer,
                     BRUSH_COLOR_BUTTON,
-                    Rect::new(8, 332, 104, 32),
+                    Rect::new(8, color_y + 46, 104, 32),
                     "NEXT",
-                ) {
-                    self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
-                    self.brush.settings.color = BRUSH_COLORS[self.brush_color];
-                    self.rerender = true;
-                }
-                380
+                )
+            {
+                self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
+                self.brush.settings.color = BRUSH_COLORS[self.brush_color];
+                self.rerender = true;
             }
-            ActiveTool::Eraser => 286,
-            ActiveTool::Eyedropper => {
-                self.ui.label(framebuffer, 20, 192, "VISIBLE");
-                self.ui.label(framebuffer, 20, 238, "COLOR");
-                framebuffer.fill_rect(Rect::new(88, 234, 20, 20), brush_color);
-                framebuffer.draw_rect(Rect::new(88, 234, 20, 20), Color::rgb(225, 228, 232));
-                self.ui.label(framebuffer, 20, 262, &brush_color_hex);
-                302
-            }
+        }
+
+        let alpha_y = match self.active_tool {
+            ActiveTool::Brush => 406,
+            ActiveTool::Eraser => 312,
+            ActiveTool::Eyedropper => 328,
+            ActiveTool::Bucket => 358,
         };
 
         self.ui.label(framebuffer, 20, alpha_y, "ALPHA");
@@ -447,7 +470,7 @@ impl App {
                 "LESS",
             ) {
                 match self.active_tool {
-                    ActiveTool::Brush => {
+                    ActiveTool::Brush | ActiveTool::Bucket => {
                         self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32)
                     }
                     ActiveTool::Eraser => {
@@ -465,7 +488,7 @@ impl App {
                 "MORE",
             ) {
                 match self.active_tool {
-                    ActiveTool::Brush => {
+                    ActiveTool::Brush | ActiveTool::Bucket => {
                         self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32)
                     }
                     ActiveTool::Eraser => {
@@ -478,8 +501,8 @@ impl App {
             }
         }
 
-        self.ui.label(framebuffer, 20, 484, "PAN");
-        self.ui.label(framebuffer, 20, 508, "MIDDLE");
+        self.ui.label(framebuffer, 20, 500, "PAN");
+        self.ui.label(framebuffer, 20, 524, "MIDDLE");
         self.ui
             .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
@@ -724,10 +747,17 @@ impl App {
         if !self.document.as_ref().unwrap().active_layer().visible {
             return;
         }
+        let fill_color = Color::rgba(
+            self.brush.settings.color.red(),
+            self.brush.settings.color.green(),
+            self.brush.settings.color.blue(),
+            self.brush.settings.opacity,
+        );
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_down(pixels, point),
             ActiveTool::Eraser => self.eraser.pointer_down(pixels, point),
+            ActiveTool::Bucket => pixels.flood_fill(point.0, point.1, fill_color),
             ActiveTool::Eyedropper => {}
         }
     }
@@ -745,7 +775,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_move(pixels, point),
             ActiveTool::Eraser => self.eraser.pointer_move(pixels, point),
-            ActiveTool::Eyedropper => {}
+            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
         }
     }
 
@@ -753,7 +783,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.is_active(),
             ActiveTool::Eraser => self.eraser.is_active(),
-            ActiveTool::Eyedropper => false,
+            ActiveTool::Eyedropper | ActiveTool::Bucket => false,
         }
     }
 
@@ -761,7 +791,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_up(),
             ActiveTool::Eraser => self.eraser.pointer_up(),
-            ActiveTool::Eyedropper => {}
+            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
         }
     }
 
@@ -769,7 +799,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.break_segment(),
             ActiveTool::Eraser => self.eraser.break_segment(),
-            ActiveTool::Eyedropper => {}
+            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
         }
     }
 

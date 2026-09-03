@@ -165,6 +165,38 @@ impl PixelBuffer {
         Some(Color::from_u32(self.pixels[(y * self.width + x) as usize]))
     }
 
+    pub(crate) fn flood_fill(&mut self, x: u32, y: u32, color: Color) {
+        let Some(source) = self.get_pixel(x, y).map(Color::as_u32) else {
+            return;
+        };
+        let replacement = color.as_u32();
+        if source == replacement {
+            return;
+        }
+
+        let width = self.width as usize;
+        let start = (y * self.width + x) as usize;
+        self.pixels[start] = replacement;
+        let mut pending = vec![start];
+
+        // ponytail: exact 4-neighbor fill; add scanline/tolerance only after profiling large fills.
+        while let Some(index) = pending.pop() {
+            let pixel_x = index % width;
+            let neighbors = [
+                (pixel_x > 0).then(|| index - 1),
+                (pixel_x + 1 < width).then(|| index + 1),
+                (index >= width).then(|| index - width),
+                (index + width < self.pixels.len()).then(|| index + width),
+            ];
+            for neighbor in neighbors.into_iter().flatten() {
+                if self.pixels[neighbor] == source {
+                    self.pixels[neighbor] = replacement;
+                    pending.push(neighbor);
+                }
+            }
+        }
+    }
+
     pub(crate) fn stamp_circle(&mut self, center_x: u32, center_y: u32, radius: u32, color: Color) {
         if color.alpha() == 0 {
             return;
@@ -264,5 +296,26 @@ mod tests {
         document.move_active_up();
         assert!(document.remove_active_layer());
         assert!(!document.remove_active_layer());
+    }
+
+    #[test]
+    fn flood_fill_replaces_only_the_bounded_matching_region() {
+        let white = Color::rgb(255, 255, 255);
+        let black = Color::rgb(0, 0, 0);
+        let red = Color::rgba(220, 40, 30, 128);
+        let mut document = Document::new(7, 5, white).unwrap();
+        let pixels = &mut document.active_layer_mut().pixels;
+        for y in 0..pixels.height {
+            pixels.stamp_circle(3, y, 0, black);
+        }
+
+        pixels.flood_fill(1, 2, red);
+
+        assert_eq!(pixels.get_pixel(0, 0), Some(red));
+        assert_eq!(pixels.get_pixel(2, 4), Some(red));
+        assert_eq!(pixels.get_pixel(3, 2), Some(black));
+        assert_eq!(pixels.get_pixel(4, 2), Some(white));
+        pixels.flood_fill(99, 99, black);
+        assert_eq!(pixels.get_pixel(4, 2), Some(white));
     }
 }
