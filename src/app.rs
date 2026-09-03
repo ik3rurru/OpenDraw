@@ -13,6 +13,15 @@ const WHITE_RADIO: u32 = 4;
 const CANCEL_BUTTON: u32 = 5;
 const CREATE_BUTTON: u32 = 6;
 const NEW_DOCUMENT_BUTTON: u32 = 7;
+const PREVIOUS_LAYER_BUTTON: u32 = 8;
+const NEXT_LAYER_BUTTON: u32 = 9;
+const VISIBILITY_BUTTON: u32 = 10;
+const OPACITY_DOWN_BUTTON: u32 = 11;
+const OPACITY_UP_BUTTON: u32 = 12;
+const MOVE_DOWN_BUTTON: u32 = 13;
+const MOVE_UP_BUTTON: u32 = 14;
+const ADD_LAYER_BUTTON: u32 = 15;
+const DELETE_LAYER_BUTTON: u32 = 16;
 const PENCIL_COLOR: Color = Color::rgb(24, 24, 24);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +51,8 @@ pub struct App {
     panning: bool,
     drawing: bool,
     last_draw_point: Option<(u32, u32)>,
+    editor_notice: Option<&'static str>,
+    rerender: bool,
 }
 
 impl App {
@@ -61,6 +72,8 @@ impl App {
             panning: false,
             drawing: false,
             last_draw_point: None,
+            editor_notice: None,
+            rerender: false,
         }
     }
 
@@ -131,9 +144,11 @@ impl App {
     }
 
     pub fn render(&mut self, framebuffer: &mut FrameBuffer) {
+        self.rerender = false;
         let previous_state = self.state;
         self.render_current_state(framebuffer);
-        if self.state != previous_state && self.running {
+        if (self.state != previous_state || self.rerender) && self.running {
+            self.rerender = false;
             self.render_current_state(framebuffer);
         }
     }
@@ -194,6 +209,7 @@ impl App {
             self.background == Background::Transparent,
         ) {
             self.background = Background::Transparent;
+            self.rerender = true;
         }
         if self.ui.radio_button(
             framebuffer,
@@ -204,6 +220,7 @@ impl App {
             self.background == Background::White,
         ) {
             self.background = Background::White;
+            self.rerender = true;
         }
 
         if let Some(error) = self.validation_error {
@@ -236,13 +253,19 @@ impl App {
 
     fn render_editor(&mut self, framebuffer: &mut FrameBuffer) {
         let viewport = self.editor_viewport();
-        let document = self.document.as_ref().expect("editor needs a document");
         let window_width = self.window_size.0.min(i32::MAX as u32) as i32;
         let window_height = self.window_size.1.min(i32::MAX as u32) as i32;
 
         framebuffer.clear(Color::rgb(27, 30, 35));
         framebuffer.fill_rect(viewport, Color::rgb(45, 49, 56));
+        let document = self.document.as_ref().expect("editor needs a document");
         self.canvas_view.render(document, framebuffer, viewport);
+        let document_size = (document.width, document.height);
+        let layer_name = document.active_layer().name.clone();
+        let layer_number = document.active_layer + 1;
+        let layer_count = document.layers.len();
+        let layer_visible = document.active_layer().visible;
+        let layer_opacity = document.active_layer().opacity;
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
 
         self.ui
@@ -282,21 +305,144 @@ impl App {
             framebuffer,
             window_width - 160,
             116,
-            &format!("{} X {}", document.width, document.height),
+            &format!("{} X {}", document_size.0, document_size.1),
         );
-        self.ui.label(framebuffer, window_width - 160, 160, "LAYER");
+        self.ui
+            .label(framebuffer, window_width - 160, 160, "LAYERS");
+        self.ui
+            .label(framebuffer, window_width - 160, 194, &layer_name);
         self.ui.label(
             framebuffer,
             window_width - 160,
-            194,
-            &document.active_layer().name,
+            218,
+            &format!("{} / {}", layer_number, layer_count),
         );
+
+        let controls_x = window_width - 164;
+        if self.ui.button(
+            framebuffer,
+            PREVIOUS_LAYER_BUTTON,
+            Rect::new(controls_x, 242, 72, 32),
+            "PREV",
+        ) {
+            let document = self.document.as_mut().unwrap();
+            document.active_layer = document.active_layer.saturating_sub(1);
+            self.layer_changed();
+        }
+        if self.ui.button(
+            framebuffer,
+            NEXT_LAYER_BUTTON,
+            Rect::new(controls_x + 76, 242, 72, 32),
+            "NEXT",
+        ) {
+            let document = self.document.as_mut().unwrap();
+            document.active_layer = (document.active_layer + 1).min(document.layers.len() - 1);
+            self.layer_changed();
+        }
+
+        self.ui.label(
+            framebuffer,
+            window_width - 160,
+            288,
+            if layer_visible { "VISIBLE" } else { "HIDDEN" },
+        );
+        if self.ui.button(
+            framebuffer,
+            VISIBILITY_BUTTON,
+            Rect::new(controls_x, 310, 148, 32),
+            if layer_visible { "HIDE" } else { "SHOW" },
+        ) {
+            let layer = self.document.as_mut().unwrap().active_layer_mut();
+            layer.visible = !layer.visible;
+            self.layer_changed();
+        }
+
+        self.ui.label(
+            framebuffer,
+            window_width - 160,
+            356,
+            &format!("OPACITY {}%", (u16::from(layer_opacity) * 100 / 255)),
+        );
+        if self.ui.button(
+            framebuffer,
+            OPACITY_DOWN_BUTTON,
+            Rect::new(controls_x, 378, 72, 32),
+            "LESS",
+        ) {
+            let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
+            *opacity = opacity.saturating_sub(32);
+            self.layer_changed();
+        }
+        if self.ui.button(
+            framebuffer,
+            OPACITY_UP_BUTTON,
+            Rect::new(controls_x + 76, 378, 72, 32),
+            "MORE",
+        ) {
+            let opacity = &mut self.document.as_mut().unwrap().active_layer_mut().opacity;
+            *opacity = opacity.saturating_add(32);
+            self.layer_changed();
+        }
+
+        self.ui.label(framebuffer, window_width - 160, 424, "ORDER");
+        if self.ui.button(
+            framebuffer,
+            MOVE_DOWN_BUTTON,
+            Rect::new(controls_x, 446, 72, 32),
+            "DOWN",
+        ) {
+            self.document.as_mut().unwrap().move_active_down();
+            self.layer_changed();
+        }
+        if self.ui.button(
+            framebuffer,
+            MOVE_UP_BUTTON,
+            Rect::new(controls_x + 76, 446, 72, 32),
+            "UP",
+        ) {
+            self.document.as_mut().unwrap().move_active_up();
+            self.layer_changed();
+        }
+
+        if self.ui.button(
+            framebuffer,
+            ADD_LAYER_BUTTON,
+            Rect::new(controls_x, 496, 72, 32),
+            "ADD",
+        ) {
+            self.editor_notice = match self.document.as_mut().unwrap().add_layer() {
+                Ok(()) => None,
+                Err(DocumentError::AllocationFailed) => Some("NOT ENOUGH MEMORY"),
+                Err(_) => Some("LAYER LIMIT REACHED"),
+            };
+            self.rerender = true;
+        }
+        if self.ui.button(
+            framebuffer,
+            DELETE_LAYER_BUTTON,
+            Rect::new(controls_x + 76, 496, 72, 32),
+            "DELETE",
+        ) {
+            self.editor_notice = (!self.document.as_mut().unwrap().remove_active_layer())
+                .then_some("KEEP ONE LAYER");
+            self.rerender = true;
+        }
+
         self.ui.label(
             framebuffer,
             136,
             window_height - 25,
             &format!("ZOOM {}%", (self.canvas_view.zoom * 100.0).round() as u32),
         );
+        if let Some(notice) = self.editor_notice {
+            self.ui.colored_label(
+                framebuffer,
+                300,
+                window_height - 25,
+                notice,
+                Color::rgb(230, 90, 80),
+            );
+        }
 
         if self.ui.button(
             framebuffer,
@@ -308,6 +454,7 @@ impl App {
             self.panning = false;
             self.drawing = false;
             self.last_draw_point = None;
+            self.editor_notice = None;
             self.ui.clear_focus();
         }
     }
@@ -357,7 +504,15 @@ impl App {
         self.panning = false;
         self.drawing = false;
         self.last_draw_point = None;
+        self.editor_notice = None;
         self.ui.clear_focus();
+    }
+
+    fn layer_changed(&mut self) {
+        self.editor_notice = None;
+        self.rerender = true;
+        self.drawing = false;
+        self.last_draw_point = None;
     }
 
     fn canvas_pixel_at(&self, screen_x: i32, screen_y: i32) -> Option<(u32, u32)> {
@@ -378,6 +533,10 @@ impl App {
             return;
         };
         let previous = self.last_draw_point.unwrap_or(point);
+        if !self.document.as_ref().unwrap().active_layer().visible {
+            self.last_draw_point = None;
+            return;
+        }
         self.document
             .as_mut()
             .expect("drawing needs a document")

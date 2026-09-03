@@ -69,8 +69,6 @@ impl CanvasView {
         let bottom = (document_bottom.ceil() as i64)
             .min(viewport.y as i64 + viewport.height as i64)
             .min(framebuffer.height as i64);
-        let layer = document.active_layer();
-
         for screen_y in top..bottom {
             for screen_x in left..right {
                 let checker = if (((screen_x - document_left.floor() as i64) / 12)
@@ -82,22 +80,11 @@ impl CanvasView {
                 } else {
                     Color::rgb(176, 176, 176)
                 };
-                framebuffer.set_pixel(screen_x as i32, screen_y as i32, checker);
-
-                if !layer.visible {
-                    continue;
-                }
                 let (canvas_x, canvas_y) = self.screen_to_canvas(screen_x as f32, screen_y as f32);
-                let Some(pixel) = layer.pixels.get_pixel(canvas_x as u32, canvas_y as u32) else {
-                    continue;
-                };
-                let pixel = Color::rgba(
-                    pixel.red(),
-                    pixel.green(),
-                    pixel.blue(),
-                    ((u16::from(pixel.alpha()) * u16::from(layer.opacity) + 127) / 255) as u8,
-                );
-                framebuffer.blend_pixel(screen_x as i32, screen_y as i32, pixel);
+                let pixel = document
+                    .composite_pixel(canvas_x as u32, canvas_y as u32, checker)
+                    .unwrap_or(checker);
+                framebuffer.set_pixel(screen_x as i32, screen_y as i32, pixel);
             }
         }
     }
