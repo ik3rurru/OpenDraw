@@ -30,11 +30,12 @@ const BRUSH_ALPHA_DOWN_BUTTON: u32 = 20;
 const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
 const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
-const BRUSH_COLORS: [(Color, &str); 4] = [
-    (Color::rgb(24, 24, 24), "BLACK"),
-    (Color::rgb(210, 60, 60), "RED"),
-    (Color::rgb(55, 170, 90), "GREEN"),
-    (Color::rgb(60, 120, 220), "BLUE"),
+const SELECT_EYEDROPPER_BUTTON: u32 = 24;
+const BRUSH_COLORS: [Color; 4] = [
+    Color::rgb(24, 24, 24),
+    Color::rgb(210, 60, 60),
+    Color::rgb(55, 170, 90),
+    Color::rgb(60, 120, 220),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +54,7 @@ enum AppState {
 enum ActiveTool {
     Brush,
     Eraser,
+    Eyedropper,
 }
 
 pub struct App {
@@ -291,10 +293,16 @@ impl App {
                 self.eraser.settings.radius,
                 self.eraser.settings.opacity,
             ),
+            ActiveTool::Eyedropper => ("EYEDROPPER", 0, self.brush.settings.opacity),
         };
         let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
-        let brush_color_name = BRUSH_COLORS[self.brush_color].1;
+        let brush_color_hex = format!(
+            "{:02X}{:02X}{:02X}",
+            brush_color.red(),
+            brush_color.green(),
+            brush_color.blue()
+        );
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
 
         self.ui
@@ -327,7 +335,7 @@ impl App {
         if self.ui.button(
             framebuffer,
             SELECT_BRUSH_BUTTON,
-            Rect::new(8, 108, 104, 32),
+            Rect::new(8, 108, 104, 24),
             "BRUSH",
         ) {
             self.end_tool();
@@ -337,68 +345,91 @@ impl App {
         if self.ui.button(
             framebuffer,
             SELECT_ERASER_BUTTON,
-            Rect::new(8, 144, 104, 32),
+            Rect::new(8, 134, 104, 24),
             "ERASER",
         ) {
             self.end_tool();
             self.active_tool = ActiveTool::Eraser;
             self.rerender = true;
         }
-
-        self.ui
-            .label(framebuffer, 20, 192, &format!("{tool_name} SIZE"));
-        self.ui.label(framebuffer, 20, 216, &format!("{tool_size}"));
         if self.ui.button(
             framebuffer,
-            BRUSH_SIZE_DOWN_BUTTON,
-            Rect::new(8, 238, 50, 32),
-            "LESS",
+            SELECT_EYEDROPPER_BUTTON,
+            Rect::new(8, 160, 104, 24),
+            "PICKER",
         ) {
-            match self.active_tool {
-                ActiveTool::Brush => {
-                    self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1)
-                }
-                ActiveTool::Eraser => {
-                    self.eraser.settings.radius = self.eraser.settings.radius.saturating_sub(1)
-                }
-            }
-            self.rerender = true;
-        }
-        if self.ui.button(
-            framebuffer,
-            BRUSH_SIZE_UP_BUTTON,
-            Rect::new(62, 238, 50, 32),
-            "MORE",
-        ) {
-            match self.active_tool {
-                ActiveTool::Brush => {
-                    self.brush.settings.radius = (self.brush.settings.radius + 1).min(127)
-                }
-                ActiveTool::Eraser => {
-                    self.eraser.settings.radius = (self.eraser.settings.radius + 1).min(127)
-                }
-            }
+            self.end_tool();
+            self.active_tool = ActiveTool::Eyedropper;
             self.rerender = true;
         }
 
-        let alpha_y = if self.active_tool == ActiveTool::Brush {
-            self.ui.label(framebuffer, 20, 286, "COLOR");
-            self.ui.label(framebuffer, 20, 310, brush_color_name);
-            framebuffer.fill_rect(Rect::new(88, 306, 20, 20), brush_color);
-            framebuffer.draw_rect(Rect::new(88, 306, 20, 20), Color::rgb(225, 228, 232));
+        if self.active_tool != ActiveTool::Eyedropper {
+            self.ui
+                .label(framebuffer, 20, 192, &format!("{tool_name} SIZE"));
+            self.ui.label(framebuffer, 20, 216, &format!("{tool_size}"));
             if self.ui.button(
                 framebuffer,
-                BRUSH_COLOR_BUTTON,
-                Rect::new(8, 332, 104, 32),
-                "NEXT",
+                BRUSH_SIZE_DOWN_BUTTON,
+                Rect::new(8, 238, 50, 32),
+                "LESS",
             ) {
-                self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
-                self.brush.settings.color = BRUSH_COLORS[self.brush_color].0;
+                match self.active_tool {
+                    ActiveTool::Brush => {
+                        self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1)
+                    }
+                    ActiveTool::Eraser => {
+                        self.eraser.settings.radius = self.eraser.settings.radius.saturating_sub(1)
+                    }
+                    ActiveTool::Eyedropper => {}
+                }
                 self.rerender = true;
             }
-            380
-        } else {
-            286
+            if self.ui.button(
+                framebuffer,
+                BRUSH_SIZE_UP_BUTTON,
+                Rect::new(62, 238, 50, 32),
+                "MORE",
+            ) {
+                match self.active_tool {
+                    ActiveTool::Brush => {
+                        self.brush.settings.radius = (self.brush.settings.radius + 1).min(127)
+                    }
+                    ActiveTool::Eraser => {
+                        self.eraser.settings.radius = (self.eraser.settings.radius + 1).min(127)
+                    }
+                    ActiveTool::Eyedropper => {}
+                }
+                self.rerender = true;
+            }
+        }
+
+        let alpha_y = match self.active_tool {
+            ActiveTool::Brush => {
+                self.ui.label(framebuffer, 20, 286, "COLOR");
+                framebuffer.fill_rect(Rect::new(88, 282, 20, 20), brush_color);
+                framebuffer.draw_rect(Rect::new(88, 282, 20, 20), Color::rgb(225, 228, 232));
+                self.ui.label(framebuffer, 20, 310, &brush_color_hex);
+                if self.ui.button(
+                    framebuffer,
+                    BRUSH_COLOR_BUTTON,
+                    Rect::new(8, 332, 104, 32),
+                    "NEXT",
+                ) {
+                    self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
+                    self.brush.settings.color = BRUSH_COLORS[self.brush_color];
+                    self.rerender = true;
+                }
+                380
+            }
+            ActiveTool::Eraser => 286,
+            ActiveTool::Eyedropper => {
+                self.ui.label(framebuffer, 20, 192, "VISIBLE");
+                self.ui.label(framebuffer, 20, 238, "COLOR");
+                framebuffer.fill_rect(Rect::new(88, 234, 20, 20), brush_color);
+                framebuffer.draw_rect(Rect::new(88, 234, 20, 20), Color::rgb(225, 228, 232));
+                self.ui.label(framebuffer, 20, 262, &brush_color_hex);
+                302
+            }
         };
 
         self.ui.label(framebuffer, 20, alpha_y, "ALPHA");
@@ -408,37 +439,43 @@ impl App {
             alpha_y + 24,
             &format!("{}%", (u16::from(tool_opacity) * 100 + 127) / 255),
         );
-        if self.ui.button(
-            framebuffer,
-            BRUSH_ALPHA_DOWN_BUTTON,
-            Rect::new(8, alpha_y + 46, 50, 32),
-            "LESS",
-        ) {
-            match self.active_tool {
-                ActiveTool::Brush => {
-                    self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32)
+        if self.active_tool != ActiveTool::Eyedropper {
+            if self.ui.button(
+                framebuffer,
+                BRUSH_ALPHA_DOWN_BUTTON,
+                Rect::new(8, alpha_y + 46, 50, 32),
+                "LESS",
+            ) {
+                match self.active_tool {
+                    ActiveTool::Brush => {
+                        self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32)
+                    }
+                    ActiveTool::Eraser => {
+                        self.eraser.settings.opacity =
+                            self.eraser.settings.opacity.saturating_sub(32)
+                    }
+                    ActiveTool::Eyedropper => {}
                 }
-                ActiveTool::Eraser => {
-                    self.eraser.settings.opacity = self.eraser.settings.opacity.saturating_sub(32)
-                }
+                self.rerender = true;
             }
-            self.rerender = true;
-        }
-        if self.ui.button(
-            framebuffer,
-            BRUSH_ALPHA_UP_BUTTON,
-            Rect::new(62, alpha_y + 46, 50, 32),
-            "MORE",
-        ) {
-            match self.active_tool {
-                ActiveTool::Brush => {
-                    self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32)
+            if self.ui.button(
+                framebuffer,
+                BRUSH_ALPHA_UP_BUTTON,
+                Rect::new(62, alpha_y + 46, 50, 32),
+                "MORE",
+            ) {
+                match self.active_tool {
+                    ActiveTool::Brush => {
+                        self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32)
+                    }
+                    ActiveTool::Eraser => {
+                        self.eraser.settings.opacity =
+                            self.eraser.settings.opacity.saturating_add(32)
+                    }
+                    ActiveTool::Eyedropper => {}
                 }
-                ActiveTool::Eraser => {
-                    self.eraser.settings.opacity = self.eraser.settings.opacity.saturating_add(32)
-                }
+                self.rerender = true;
             }
-            self.rerender = true;
         }
 
         self.ui.label(framebuffer, 20, 484, "PAN");
@@ -672,6 +709,18 @@ impl App {
         let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
             return;
         };
+        if self.active_tool == ActiveTool::Eyedropper {
+            let color = self
+                .document
+                .as_ref()
+                .unwrap()
+                .composite_pixel(point.0, point.1, Color::rgba(0, 0, 0, 0))
+                .unwrap();
+            self.brush.settings.color = Color::rgb(color.red(), color.green(), color.blue());
+            self.brush.settings.opacity = color.alpha();
+            self.rerender = true;
+            return;
+        }
         if !self.document.as_ref().unwrap().active_layer().visible {
             return;
         }
@@ -679,6 +728,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_down(pixels, point),
             ActiveTool::Eraser => self.eraser.pointer_down(pixels, point),
+            ActiveTool::Eyedropper => {}
         }
     }
 
@@ -695,6 +745,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_move(pixels, point),
             ActiveTool::Eraser => self.eraser.pointer_move(pixels, point),
+            ActiveTool::Eyedropper => {}
         }
     }
 
@@ -702,6 +753,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.is_active(),
             ActiveTool::Eraser => self.eraser.is_active(),
+            ActiveTool::Eyedropper => false,
         }
     }
 
@@ -709,6 +761,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.pointer_up(),
             ActiveTool::Eraser => self.eraser.pointer_up(),
+            ActiveTool::Eyedropper => {}
         }
     }
 
@@ -716,6 +769,7 @@ impl App {
         match self.active_tool {
             ActiveTool::Brush => self.brush.break_segment(),
             ActiveTool::Eraser => self.eraser.break_segment(),
+            ActiveTool::Eyedropper => {}
         }
     }
 
@@ -788,5 +842,34 @@ mod tests {
                 .get_pixel(3, 2),
             Some(app.brush.settings.color)
         );
+    }
+
+    #[test]
+    fn eyedropper_samples_the_visible_composition_into_the_brush_color() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        let mut document = Document::new(4, 4, Color::rgba(0, 0, 255, 128)).unwrap();
+        document.add_layer().unwrap();
+        document.active_layer_mut().opacity = 128;
+        document
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(1, 1, 0, Color::rgb(255, 0, 0));
+        let expected = document
+            .composite_pixel(1, 1, Color::rgba(0, 0, 0, 0))
+            .unwrap();
+        app.canvas_view = CanvasView::fit(&document, app.editor_viewport());
+        app.document = Some(document);
+        app.state = AppState::Editor;
+        app.active_tool = ActiveTool::Eyedropper;
+
+        let (x, y) = app.canvas_view.canvas_to_screen(1.0, 1.0);
+        app.begin_tool(x as i32, y as i32);
+
+        assert_eq!(
+            app.brush.settings.color,
+            Color::rgb(expected.red(), expected.green(), expected.blue())
+        );
+        assert_eq!(app.brush.settings.opacity, expected.alpha());
     }
 }

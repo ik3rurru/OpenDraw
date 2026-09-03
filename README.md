@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: documentos raster con capas, pincel circular, borrador, zoom y desplazamiento en Windows.
+Estado actual: documentos raster con capas, pincel circular, borrador, cuentagotas, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -19,8 +19,9 @@ Haz clic en el campo para escribir; `Tab` cambia el foco y `Enter` o espacio act
 En el lienzo, dibuja con el botón izquierdo, usa la rueda para el zoom y desplaza
 la vista con el botón central.
 
-El panel izquierdo permite elegir pincel o borrador y ajustar su tamaño y alpha.
-El pincel también permite elegir color; el borrador elimina contenido de la capa activa.
+El panel izquierdo permite elegir pincel, borrador o cuentagotas. El pincel y el
+borrador tienen tamaño y alpha propios; el cuentagotas toma el color compuesto de
+todas las capas visibles.
 
 El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y cambiar
 la opacidad de las capas.
