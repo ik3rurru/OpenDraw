@@ -23,7 +23,6 @@ const MOVE_UP_BUTTON: u32 = 14;
 const ADD_LAYER_BUTTON: u32 = 15;
 const DELETE_LAYER_BUTTON: u32 = 16;
 const TOOL_SIZE_SLIDER: u32 = 17;
-const OPEN_COLOR_PICKER_BUTTON: u32 = 19;
 const TOOL_OPACITY_SLIDER: u32 = 20;
 const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
@@ -33,12 +32,12 @@ const RED_SLIDER: u32 = 26;
 const GREEN_SLIDER: u32 = 27;
 const BLUE_SLIDER: u32 = 28;
 const ALPHA_SLIDER: u32 = 29;
-const COLOR_PICKER_DONE_BUTTON: u32 = 30;
 const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
 const COLOR_SQUARE: u32 = 33;
 const HUE_SLIDER: u32 = 34;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
+const EDITOR_LEFT_WIDTH: u32 = 248;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -76,7 +75,6 @@ pub struct App {
     brush: BrushTool,
     eraser: EraserTool,
     active_tool: ActiveTool,
-    color_picker_open: bool,
     picker_hue: u32,
     control_down: bool,
     undo_history: Vec<Document>,
@@ -104,7 +102,6 @@ impl App {
             brush: BrushTool::default(),
             eraser: EraserTool::default(),
             active_tool: ActiveTool::Brush,
-            color_picker_open: false,
             picker_hue: 0,
             control_down: false,
             undo_history: Vec::new(),
@@ -144,7 +141,7 @@ impl App {
             }
             Event::MouseDown {
                 button: MouseButton::Left,
-            } if self.state == AppState::Editor && !self.color_picker_open => {
+            } if self.state == AppState::Editor => {
                 self.begin_tool(self.pointer.0, self.pointer.1);
             }
             Event::MouseUp {
@@ -168,10 +165,6 @@ impl App {
             Event::KeyDown {
                 key: Key::Backspace,
             } => self.validation_error = None,
-            Event::KeyDown { key: Key::Escape } if self.color_picker_open => {
-                self.color_picker_open = false;
-                self.ui.clear_focus();
-            }
             Event::KeyDown { key: Key::Control } => self.control_down = true,
             Event::KeyUp { key: Key::Control } => self.control_down = false,
             Event::KeyDown {
@@ -314,13 +307,6 @@ impl App {
         };
         let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
-        let brush_color_hex = format!(
-            "{:02X}{:02X}{:02X}{:02X}",
-            brush_color.red(),
-            brush_color.green(),
-            brush_color.blue(),
-            self.brush.settings.opacity
-        );
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
 
         self.ui
@@ -328,6 +314,10 @@ impl App {
         self.ui.panel(
             framebuffer,
             Rect::new(0, 56, 120, self.window_size.1.saturating_sub(56)),
+        );
+        self.ui.panel(
+            framebuffer,
+            Rect::new(120, 56, 128, self.window_size.1.saturating_sub(56)),
         );
         self.ui.panel(
             framebuffer,
@@ -341,9 +331,9 @@ impl App {
         self.ui.panel(
             framebuffer,
             Rect::new(
-                120,
+                EDITOR_LEFT_WIDTH as i32,
                 window_height - 36,
-                self.window_size.0.saturating_sub(300),
+                self.window_size.0.saturating_sub(428),
                 36,
             ),
         );
@@ -361,10 +351,7 @@ impl App {
         {
             self.redo();
         }
-        if self.color_picker_open {
-            self.render_color_picker(framebuffer);
-            return;
-        }
+        self.render_color_picker(framebuffer);
         self.ui.label(framebuffer, 20, 82, "TOOLS");
         if self.ui.button(
             framebuffer,
@@ -458,39 +445,9 @@ impl App {
             ActiveTool::Bucket => self.ui.label(framebuffer, 20, 218, "ACTIVE"),
             _ => {}
         }
-        let color_y = match self.active_tool {
-            ActiveTool::Brush => Some(402),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => Some(264),
-            ActiveTool::Eraser => None,
-        };
-        if let Some(color_y) = color_y {
-            self.ui.label(framebuffer, 20, color_y, "COLOR");
-            framebuffer.fill_rect(Rect::new(88, color_y - 4, 20, 20), brush_color);
-            framebuffer.draw_rect(
-                Rect::new(88, color_y - 4, 20, 20),
-                Color::rgb(225, 228, 232),
-            );
-            self.ui
-                .label(framebuffer, 20, color_y + 24, &brush_color_hex);
-            if self.active_tool != ActiveTool::Eyedropper
-                && self.ui.button(
-                    framebuffer,
-                    OPEN_COLOR_PICKER_BUTTON,
-                    Rect::new(8, color_y + 46, 104, 32),
-                    "EDIT",
-                )
-            {
-                self.end_tool();
-                self.picker_hue = brush_color.to_hsv().0;
-                self.color_picker_open = true;
-                self.rerender = true;
-            }
-        }
-
         let alpha_y = match self.active_tool {
             ActiveTool::Brush | ActiveTool::Eraser => 346,
-            ActiveTool::Eyedropper => 328,
-            ActiveTool::Bucket => 358,
+            ActiveTool::Eyedropper | ActiveTool::Bucket => 264,
         };
 
         self.ui.label(
@@ -675,14 +632,14 @@ impl App {
 
         self.ui.label(
             framebuffer,
-            136,
+            EDITOR_LEFT_WIDTH as i32 + 16,
             window_height - 25,
             &format!("ZOOM {}%", (self.canvas_view.zoom * 100.0).round() as u32),
         );
         if let Some(notice) = self.editor_notice {
             self.ui.colored_label(
                 framebuffer,
-                300,
+                EDITOR_LEFT_WIDTH as i32 + 172,
                 window_height - 25,
                 notice,
                 Color::rgb(230, 90, 80),
@@ -698,14 +655,14 @@ impl App {
             self.state = AppState::NewDocument;
             self.panning = false;
             self.end_tool();
-            self.color_picker_open = false;
             self.editor_notice = None;
             self.ui.clear_focus();
         }
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
-        self.ui.label(framebuffer, 20, 82, "COLOR");
+        let x = 120;
+        self.ui.label(framebuffer, x + 20, 82, "COLOR");
 
         let (_, saturation, value) = self.brush.settings.color.to_hsv();
         let mut saturation = u32::from(saturation);
@@ -714,18 +671,18 @@ impl App {
         let color_changed = self.ui.color_square(
             framebuffer,
             COLOR_SQUARE,
-            Rect::new(8, 108, 104, 104),
+            Rect::new(x + 8, 108, 104, 104),
             hue,
             &mut saturation,
             &mut value,
         );
-        self.ui.label(framebuffer, 20, 220, &format!("H {hue}"));
+        self.ui.label(framebuffer, x + 20, 220, &format!("H {hue}"));
         let hue_changed = self
             .ui
             .hue_slider(
                 framebuffer,
                 HUE_SLIDER,
-                Rect::new(8, 240, 104, 20),
+                Rect::new(x + 8, 240, 104, 20),
                 &mut hue,
             )
             .changed;
@@ -739,10 +696,10 @@ impl App {
         let mut green = u32::from(self.brush.settings.color.green());
         let mut blue = u32::from(self.brush.settings.color.blue());
         let mut alpha = u32::from(self.brush.settings.opacity);
-        let preview = Rect::new(20, 270, 80, 32);
+        let preview = Rect::new(x + 20, 270, 80, 32);
         framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
-        framebuffer.fill_rect(Rect::new(60, 270, 40, 16), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(Rect::new(20, 286, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(x + 60, 270, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(x + 20, 286, 40, 16), Color::rgb(176, 176, 176));
         framebuffer.fill_rect(
             preview,
             Color::rgba(red as u8, green as u8, blue as u8, alpha as u8),
@@ -750,54 +707,57 @@ impl App {
         framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
         self.ui.label(
             framebuffer,
-            20,
+            x + 20,
             310,
             &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
         );
 
-        self.ui.label(framebuffer, 20, 338, &format!("R {red}"));
+        self.ui.label(framebuffer, x + 20, 338, &format!("R {red}"));
         let mut changed = self
             .ui
             .slider(
                 framebuffer,
                 RED_SLIDER,
-                Rect::new(8, 358, 104, 20),
+                Rect::new(x + 8, 358, 104, 20),
                 &mut red,
                 255,
                 Color::rgb(210, 60, 60),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 388, &format!("G {green}"));
+        self.ui
+            .label(framebuffer, x + 20, 388, &format!("G {green}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 GREEN_SLIDER,
-                Rect::new(8, 408, 104, 20),
+                Rect::new(x + 8, 408, 104, 20),
                 &mut green,
                 255,
                 Color::rgb(55, 170, 90),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 438, &format!("B {blue}"));
+        self.ui
+            .label(framebuffer, x + 20, 438, &format!("B {blue}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 BLUE_SLIDER,
-                Rect::new(8, 458, 104, 20),
+                Rect::new(x + 8, 458, 104, 20),
                 &mut blue,
                 255,
                 Color::rgb(60, 120, 220),
             )
             .changed;
-        self.ui.label(framebuffer, 20, 488, &format!("A {alpha}"));
+        self.ui
+            .label(framebuffer, x + 20, 488, &format!("A {alpha}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 ALPHA_SLIDER,
-                Rect::new(8, 508, 104, 20),
+                Rect::new(x + 8, 508, 104, 20),
                 &mut alpha,
                 255,
                 Color::rgb(225, 228, 232),
@@ -812,17 +772,6 @@ impl App {
             self.brush.settings.color = color;
             self.brush.settings.opacity = alpha as u8;
             self.rerender = true;
-        }
-
-        if self.ui.button(
-            framebuffer,
-            COLOR_PICKER_DONE_BUTTON,
-            Rect::new(8, 544, 104, 32),
-            "DONE",
-        ) {
-            self.color_picker_open = false;
-            self.rerender = true;
-            self.ui.clear_focus();
         }
     }
 
@@ -927,7 +876,6 @@ impl App {
         self.state = AppState::Editor;
         self.panning = false;
         self.end_tool();
-        self.color_picker_open = false;
         self.undo_history.clear();
         self.redo_history.clear();
         self.editor_notice = None;
@@ -965,6 +913,10 @@ impl App {
                 .unwrap();
             self.brush.settings.color = Color::rgb(color.red(), color.green(), color.blue());
             self.brush.settings.opacity = color.alpha();
+            let (hue, saturation, _) = self.brush.settings.color.to_hsv();
+            if saturation > 0 {
+                self.picker_hue = hue;
+            }
             self.rerender = true;
             return;
         }
@@ -1047,9 +999,9 @@ impl App {
 
     fn editor_viewport(&self) -> Rect {
         Rect::new(
-            120,
+            EDITOR_LEFT_WIDTH as i32,
             56,
-            self.window_size.0.saturating_sub(300),
+            self.window_size.0.saturating_sub(428),
             self.window_size.1.saturating_sub(92),
         )
     }
@@ -1090,17 +1042,18 @@ mod tests {
             Some(Color::rgb(255, 255, 255))
         );
 
-        let (x, y) = app.canvas_view.canvas_to_screen(0.0, 0.0);
+        let (x, y) = app.canvas_view.canvas_to_screen(0.5, 0.5);
+        let (target_x, target_y) = app.canvas_view.canvas_to_screen(3.5, 2.5);
         app.handle_event(Event::MouseMove {
-            x: x as i32,
-            y: y as i32,
+            x: x.round() as i32,
+            y: y.round() as i32,
         });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
         app.handle_event(Event::MouseMove {
-            x: x as i32 + 3,
-            y: y as i32 + 2,
+            x: target_x.round() as i32,
+            y: target_y.round() as i32,
         });
         app.handle_event(Event::MouseUp {
             button: MouseButton::Left,
@@ -1236,5 +1189,24 @@ mod tests {
         assert!(app.document.as_ref().unwrap().active_layer().opacity < 255);
         app.undo();
         assert_eq!(app.document.as_ref().unwrap().active_layer().opacity, 255);
+    }
+
+    #[test]
+    fn persistent_color_picker_applies_click_immediately() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+
+        app.handle_event(Event::MouseMove { x: 231, y: 108 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+
+        assert_eq!(app.brush.settings.color, Color::rgb(255, 0, 0));
+        assert!(app.undo_history.is_empty());
     }
 }

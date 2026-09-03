@@ -22,8 +22,9 @@ la vista con el botón central.
 El panel izquierdo permite elegir pincel, borrador, cuentagotas o relleno. Pincel
 y borrador ofrecen sliders de grosor y opacidad, con una vista previa a escala. El
 cuentagotas toma el color compuesto de las capas visibles; el relleno reemplaza una
-región de color continuo en la capa activa. `EDIT` abre un campo visual de tono,
-saturación y luminosidad junto a los sliders RGBA y la representación hexadecimal.
+región de color continuo en la capa activa. El selector de tono, saturación y
+luminosidad permanece visible y aplica cada cambio al instante, junto a los sliders
+RGBA y la representación hexadecimal.
 
 El panel derecho permite añadir, eliminar, seleccionar, ocultar, ordenar y ajustar
 con un slider la opacidad de las capas.
