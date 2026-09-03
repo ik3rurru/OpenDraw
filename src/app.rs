@@ -59,6 +59,17 @@ enum ActiveTool {
     Bucket,
 }
 
+enum EditorIcon {
+    Pencil,
+    Eraser,
+    Eyedropper,
+    Bucket,
+    ArrowLeft,
+    ArrowRight,
+    Add,
+    Trash,
+}
+
 pub struct App {
     running: bool,
     window_size: (u32, u32),
@@ -354,54 +365,58 @@ impl App {
         );
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
-        if self
-            .ui
-            .button(framebuffer, UNDO_BUTTON, Rect::new(140, 9, 96, 38), "UNDO")
-        {
+        if self.icon_button(
+            framebuffer,
+            UNDO_BUTTON,
+            Rect::new(140, 9, 96, 38),
+            EditorIcon::ArrowLeft,
+        ) {
             self.undo();
         }
-        if self
-            .ui
-            .button(framebuffer, REDO_BUTTON, Rect::new(244, 9, 96, 38), "REDO")
-        {
+        if self.icon_button(
+            framebuffer,
+            REDO_BUTTON,
+            Rect::new(244, 9, 96, 38),
+            EditorIcon::ArrowRight,
+        ) {
             self.redo();
         }
         self.ui.label(framebuffer, 20, 66, "TOOLS");
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             SELECT_BRUSH_BUTTON,
             Rect::new(8, 86, 104, 22),
-            "BRUSH",
+            EditorIcon::Pencil,
         ) {
             self.end_tool();
             self.active_tool = ActiveTool::Brush;
             self.rerender = true;
         }
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             SELECT_ERASER_BUTTON,
             Rect::new(8, 109, 104, 22),
-            "ERASER",
+            EditorIcon::Eraser,
         ) {
             self.end_tool();
             self.active_tool = ActiveTool::Eraser;
             self.rerender = true;
         }
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             SELECT_EYEDROPPER_BUTTON,
             Rect::new(8, 132, 104, 22),
-            "PICKER",
+            EditorIcon::Eyedropper,
         ) {
             self.end_tool();
             self.active_tool = ActiveTool::Eyedropper;
             self.rerender = true;
         }
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             SELECT_BUCKET_BUTTON,
             Rect::new(8, 155, 104, 22),
-            "BUCKET",
+            EditorIcon::Bucket,
         ) {
             self.end_tool();
             self.active_tool = ActiveTool::Bucket;
@@ -574,11 +589,11 @@ impl App {
             self.reveal_active_layer();
         }
 
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             ADD_LAYER_BUTTON,
             Rect::new(controls_x, controls_top + 84, 92, 28),
-            "ADD",
+            EditorIcon::Add,
         ) {
             let snapshot = self.document.as_ref().unwrap().clone();
             let result = self.document.as_mut().unwrap().add_layer();
@@ -593,11 +608,11 @@ impl App {
             };
             self.rerender = true;
         }
-        if self.ui.button(
+        if self.icon_button(
             framebuffer,
             DELETE_LAYER_BUTTON,
             Rect::new(controls_x + 96, controls_top + 84, 92, 28),
-            "DELETE",
+            EditorIcon::Trash,
         ) {
             if layer_count > 1 {
                 self.checkpoint();
@@ -905,6 +920,81 @@ impl App {
             framebuffer.fill_circle(x, y, 3, color);
         } else {
             framebuffer.draw_line(x - 8, y - 8, x + 8, y + 8, Color::rgb(220, 90, 80));
+        }
+    }
+
+    fn icon_button(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        rect: Rect,
+        icon: EditorIcon,
+    ) -> bool {
+        let activated = self.ui.icon_button(framebuffer, id, rect);
+        Self::draw_icon(framebuffer, rect, icon);
+        activated
+    }
+
+    fn draw_icon(framebuffer: &mut FrameBuffer, rect: Rect, icon: EditorIcon) {
+        let x = rect.x + rect.width as i32 / 2;
+        let y = rect.y + rect.height as i32 / 2;
+        let color = Color::rgb(255, 255, 255);
+        match icon {
+            EditorIcon::Pencil => {
+                framebuffer.draw_line(x - 8, y + 6, x + 5, y - 7, color);
+                framebuffer.draw_line(x - 5, y + 8, x + 8, y - 5, color);
+                framebuffer.draw_line(x + 5, y - 7, x + 8, y - 5, color);
+                framebuffer.draw_line(x - 8, y + 6, x - 5, y + 8, color);
+                framebuffer.draw_line(x - 8, y + 6, x - 9, y + 9, color);
+            }
+            EditorIcon::Eraser => {
+                framebuffer.draw_line(x - 8, y + 1, x - 2, y - 7, color);
+                framebuffer.draw_line(x - 2, y - 7, x + 8, y, color);
+                framebuffer.draw_line(x + 8, y, x + 2, y + 7, color);
+                framebuffer.draw_line(x + 2, y + 7, x - 8, y + 1, color);
+                framebuffer.draw_line(x - 4, y - 3, x + 6, y + 4, color);
+            }
+            EditorIcon::Eyedropper => {
+                framebuffer.draw_circle(x + 5, y - 5, 3, color);
+                framebuffer.draw_line(x + 2, y - 2, x - 6, y + 6, color);
+                framebuffer.draw_line(x + 5, y + 1, x - 3, y + 9, color);
+                framebuffer.draw_line(x - 6, y + 6, x - 3, y + 9, color);
+                framebuffer.fill_circle(x - 6, y + 7, 1, color);
+            }
+            EditorIcon::Bucket => {
+                framebuffer.draw_line(x - 7, y - 4, x + 7, y - 4, color);
+                framebuffer.draw_line(x - 6, y - 4, x - 4, y + 7, color);
+                framebuffer.draw_line(x - 4, y + 7, x + 4, y + 7, color);
+                framebuffer.draw_line(x + 4, y + 7, x + 6, y - 4, color);
+                framebuffer.draw_line(x - 4, y - 5, x - 2, y - 8, color);
+                framebuffer.draw_line(x - 2, y - 8, x + 2, y - 8, color);
+                framebuffer.draw_line(x + 2, y - 8, x + 4, y - 5, color);
+                framebuffer.draw_line(x - 5, y + 2, x + 5, y + 2, color);
+                framebuffer.fill_circle(x + 9, y + 7, 1, color);
+            }
+            EditorIcon::ArrowLeft => {
+                framebuffer.draw_line(x - 12, y, x + 12, y, color);
+                framebuffer.draw_line(x - 12, y, x - 4, y - 8, color);
+                framebuffer.draw_line(x - 12, y, x - 4, y + 8, color);
+            }
+            EditorIcon::ArrowRight => {
+                framebuffer.draw_line(x - 12, y, x + 12, y, color);
+                framebuffer.draw_line(x + 12, y, x + 4, y - 8, color);
+                framebuffer.draw_line(x + 12, y, x + 4, y + 8, color);
+            }
+            EditorIcon::Add => {
+                framebuffer.fill_rect(Rect::new(x - 2, y - 9, 5, 19), color);
+                framebuffer.fill_rect(Rect::new(x - 9, y - 2, 19, 5), color);
+            }
+            EditorIcon::Trash => {
+                framebuffer.draw_rect(Rect::new(x - 6, y - 5, 13, 14), color);
+                framebuffer.draw_line(x - 8, y - 7, x + 8, y - 7, color);
+                framebuffer.draw_line(x - 3, y - 9, x + 3, y - 9, color);
+                framebuffer.draw_line(x - 3, y - 9, x - 3, y - 7, color);
+                framebuffer.draw_line(x + 3, y - 9, x + 3, y - 7, color);
+                framebuffer.draw_line(x - 2, y - 2, x - 2, y + 6, color);
+                framebuffer.draw_line(x + 2, y - 2, x + 2, y + 6, color);
+            }
         }
     }
 
@@ -1397,6 +1487,30 @@ mod tests {
         app.handle_event(Event::MouseMove { x: 900, y: 400 });
         app.handle_event(Event::MouseWheel { delta: -1.0 });
         assert_eq!(app.layer_scroll, 1);
+    }
+
+    #[test]
+    fn icon_tool_button_draws_and_remains_clickable() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.active_tool = ActiveTool::Eraser;
+        app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+
+        app.handle_event(Event::MouseMove { x: 50, y: 96 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+
+        assert_eq!(app.active_tool, ActiveTool::Brush);
+        let white_pixels = (86..108)
+            .flat_map(|y| (8..112).map(move |x| (x, y)))
+            .filter(|&(x, y)| framebuffer.get_pixel(x, y) == Some(Color::rgb(255, 255, 255)))
+            .count();
+        assert!(white_pixels > 5);
     }
 
     #[test]

@@ -105,6 +105,26 @@ impl UiContext {
         rect: Rect,
         text: &str,
     ) -> bool {
+        let response = self.button_surface(framebuffer, id, rect);
+
+        let text_width = FrameBuffer::measure_text(text, TEXT_SCALE);
+        let text_x = rect.x + rect.width.saturating_sub(text_width) as i32 / 2;
+        let text_y = rect.y + rect.height.saturating_sub(7 * TEXT_SCALE) as i32 / 2;
+        framebuffer.draw_text(text_x, text_y, text, Color::rgb(255, 255, 255), TEXT_SCALE);
+
+        response.activated
+    }
+
+    pub fn icon_button(&mut self, framebuffer: &mut FrameBuffer, id: u32, rect: Rect) -> bool {
+        self.button_surface(framebuffer, id, rect).activated
+    }
+
+    fn button_surface(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        rect: Rect,
+    ) -> ClickResponse {
         let response = self.click_target(id, rect);
         let background = if response.hovered && self.left_down {
             Color::rgb(65, 105, 160)
@@ -115,13 +135,7 @@ impl UiContext {
         };
         framebuffer.fill_rect(rect, background);
         framebuffer.draw_rect(rect, Color::rgb(150, 170, 195));
-
-        let text_width = FrameBuffer::measure_text(text, TEXT_SCALE);
-        let text_x = rect.x + rect.width.saturating_sub(text_width) as i32 / 2;
-        let text_y = rect.y + rect.height.saturating_sub(7 * TEXT_SCALE) as i32 / 2;
-        framebuffer.draw_text(text_x, text_y, text, Color::rgb(255, 255, 255), TEXT_SCALE);
-
-        response.activated
+        response
     }
 
     pub fn click_target(&mut self, id: u32, rect: Rect) -> ClickResponse {
