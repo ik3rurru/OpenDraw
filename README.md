@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: primera UI propia sobre el renderer 2D por software en Windows.
+Estado actual: creación validada de documentos y transición al editor en Windows.
 
 ## Ejecutar
 
@@ -12,7 +12,7 @@ En Windows, con Rust instalado:
 cargo run
 ```
 
-El programa abre una ventana redimensionable y dibuja una pantalla interactiva con
-fuente bitmap, panel, botón y campo de texto directamente en un `Vec<u32>`.
+El programa permite elegir dimensiones y fondo blanco o transparente antes de entrar
+en el editor provisional. Todo se dibuja directamente en un `Vec<u32>`.
 
 Haz clic en el campo para escribir; `Tab` cambia el foco y `Enter` o espacio activa el botón.

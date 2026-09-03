@@ -53,13 +53,28 @@ impl UiContext {
         self.pending_text.clear();
     }
 
+    pub fn clear_focus(&mut self) {
+        self.focused = None;
+    }
+
     pub fn panel(&self, framebuffer: &mut FrameBuffer, rect: Rect) {
         framebuffer.fill_rect(rect, Color::rgba(35, 39, 46, 245));
         framebuffer.draw_rect(rect, Color::rgb(88, 94, 105));
     }
 
     pub fn label(&self, framebuffer: &mut FrameBuffer, x: i32, y: i32, text: &str) {
-        framebuffer.draw_text(x, y, text, Color::rgb(225, 228, 232), TEXT_SCALE);
+        self.colored_label(framebuffer, x, y, text, Color::rgb(225, 228, 232));
+    }
+
+    pub fn colored_label(
+        &self,
+        framebuffer: &mut FrameBuffer,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Color,
+    ) {
+        framebuffer.draw_text(x, y, text, color, TEXT_SCALE);
     }
 
     pub fn button(
@@ -157,6 +172,46 @@ impl UiContext {
                 Color::rgb(225, 228, 232),
             );
         }
+    }
+
+    pub fn radio_button(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        x: i32,
+        y: i32,
+        text: &str,
+        selected: bool,
+    ) -> bool {
+        self.register_focus(id);
+        let hit_area = Rect::new(
+            x - 10,
+            y - 10,
+            30 + FrameBuffer::measure_text(text, TEXT_SCALE),
+            20,
+        );
+        let hovered = hit_area.contains(self.pointer.0, self.pointer.1);
+        if hovered && self.mouse_pressed {
+            self.focused = Some(id);
+        }
+
+        let focused = self.focused == Some(id);
+        framebuffer.draw_circle(
+            x,
+            y,
+            8,
+            if hovered || focused {
+                Color::rgb(90, 155, 230)
+            } else {
+                Color::rgb(150, 160, 175)
+            },
+        );
+        if selected {
+            framebuffer.fill_circle(x, y, 4, Color::rgb(90, 155, 230));
+        }
+        framebuffer.draw_text(x + 16, y - 7, text, Color::rgb(225, 228, 232), TEXT_SCALE);
+
+        (hovered && self.mouse_pressed) || (focused && self.activate_pressed)
     }
 
     fn register_focus(&mut self, id: u32) {
