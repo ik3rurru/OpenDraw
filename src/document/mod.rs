@@ -166,6 +166,36 @@ impl PixelBuffer {
     }
 
     pub(crate) fn stamp_circle(&mut self, center_x: u32, center_y: u32, radius: u32, color: Color) {
+        if color.alpha() == 0 {
+            return;
+        }
+        self.edit_circle(center_x, center_y, radius, |background| {
+            color.blend_over(background)
+        });
+    }
+
+    pub(crate) fn erase_circle(&mut self, center_x: u32, center_y: u32, radius: u32, opacity: u8) {
+        if opacity == 0 {
+            return;
+        }
+        let remaining_alpha = 255 - u16::from(opacity);
+        self.edit_circle(center_x, center_y, radius, |pixel| {
+            Color::rgba(
+                pixel.red(),
+                pixel.green(),
+                pixel.blue(),
+                ((u16::from(pixel.alpha()) * remaining_alpha + 127) / 255) as u8,
+            )
+        });
+    }
+
+    fn edit_circle(
+        &mut self,
+        center_x: u32,
+        center_y: u32,
+        radius: u32,
+        mut edit: impl FnMut(Color) -> Color,
+    ) {
         let radius = i64::from(radius);
         let radius_squared = radius * radius;
         for offset_y in -radius..=radius {
@@ -179,8 +209,7 @@ impl PixelBuffer {
                     continue;
                 }
                 let index = (y as u32 * self.width + x as u32) as usize;
-                let background = Color::from_u32(self.pixels[index]);
-                self.pixels[index] = color.blend_over(background).as_u32();
+                self.pixels[index] = edit(Color::from_u32(self.pixels[index])).as_u32();
             }
         }
     }

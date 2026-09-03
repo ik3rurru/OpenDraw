@@ -1,7 +1,6 @@
-use crate::{
-    document::PixelBuffer,
-    graphics::{Color, rasterize_line},
-};
+use crate::{document::PixelBuffer, graphics::Color};
+
+use super::{Stroke, Tool};
 
 pub struct BrushSettings {
     pub radius: u32,
@@ -11,8 +10,7 @@ pub struct BrushSettings {
 
 pub struct BrushTool {
     pub settings: BrushSettings,
-    active: bool,
-    previous_position: Option<(u32, u32)>,
+    stroke: Stroke,
 }
 
 impl Default for BrushTool {
@@ -23,68 +21,41 @@ impl Default for BrushTool {
                 color: Color::rgb(24, 24, 24),
                 opacity: 255,
             },
-            active: false,
-            previous_position: None,
+            stroke: Stroke::default(),
         }
     }
 }
 
-impl BrushTool {
-    pub fn pointer_down(&mut self, pixels: &mut PixelBuffer, point: (u32, u32)) {
-        self.active = true;
-        self.previous_position = Some(point);
-        pixels.stamp_circle(point.0, point.1, self.settings.radius, self.paint_color());
-    }
-
-    pub fn pointer_move(&mut self, pixels: &mut PixelBuffer, point: (u32, u32)) {
-        if !self.active {
-            return;
-        }
-        let Some(previous) = self.previous_position else {
-            self.pointer_down(pixels, point);
-            return;
-        };
+impl Tool for BrushTool {
+    fn pointer_down(&mut self, pixels: &mut PixelBuffer, point: (u32, u32)) {
+        let radius = self.settings.radius;
         let color = self.paint_color();
-        if self.settings.radius == 0 {
-            rasterize_line(
-                previous.0.into(),
-                previous.1.into(),
-                point.0.into(),
-                point.1.into(),
-                |x, y| pixels.stamp_circle(x as u32, y as u32, 0, color),
-            );
-        } else {
-            let delta_x = point.0 as f32 - previous.0 as f32;
-            let delta_y = point.1 as f32 - previous.1 as f32;
-            let distance = delta_x.hypot(delta_y);
-            let spacing = ((self.settings.radius * 2 + 1) as f32 / 4.0).max(1.0);
-            let steps = (distance / spacing).ceil().max(1.0) as u32;
-            for step in 1..=steps {
-                let progress = step as f32 / steps as f32;
-                pixels.stamp_circle(
-                    (previous.0 as f32 + delta_x * progress).round() as u32,
-                    (previous.1 as f32 + delta_y * progress).round() as u32,
-                    self.settings.radius,
-                    color,
-                );
-            }
-        }
-        self.previous_position = Some(point);
+        self.stroke
+            .pointer_down(point, |x, y| pixels.stamp_circle(x, y, radius, color));
     }
 
-    pub fn break_segment(&mut self) {
-        self.previous_position = None;
+    fn pointer_move(&mut self, pixels: &mut PixelBuffer, point: (u32, u32)) {
+        let radius = self.settings.radius;
+        let color = self.paint_color();
+        self.stroke.pointer_move(point, radius, |x, y| {
+            pixels.stamp_circle(x, y, radius, color)
+        });
     }
 
-    pub fn pointer_up(&mut self) {
-        self.active = false;
-        self.previous_position = None;
+    fn pointer_up(&mut self) {
+        self.stroke.pointer_up();
     }
 
-    pub fn is_active(&self) -> bool {
-        self.active
+    fn break_segment(&mut self) {
+        self.stroke.break_segment();
     }
 
+    fn is_active(&self) -> bool {
+        self.stroke.active
+    }
+}
+
+impl BrushTool {
     fn paint_color(&self) -> Color {
         Color::rgba(
             self.settings.color.red(),

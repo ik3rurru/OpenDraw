@@ -2,7 +2,7 @@ use crate::{
     document::{CanvasView, Document, DocumentError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
-    tools::BrushTool,
+    tools::{BrushTool, EraserTool, Tool},
     ui::UiContext,
 };
 
@@ -28,6 +28,8 @@ const BRUSH_SIZE_UP_BUTTON: u32 = 18;
 const BRUSH_COLOR_BUTTON: u32 = 19;
 const BRUSH_ALPHA_DOWN_BUTTON: u32 = 20;
 const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
+const SELECT_BRUSH_BUTTON: u32 = 22;
+const SELECT_ERASER_BUTTON: u32 = 23;
 const BRUSH_COLORS: [(Color, &str); 4] = [
     (Color::rgb(24, 24, 24), "BLACK"),
     (Color::rgb(210, 60, 60), "RED"),
@@ -47,6 +49,12 @@ enum AppState {
     Editor,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveTool {
+    Brush,
+    Eraser,
+}
+
 pub struct App {
     running: bool,
     window_size: (u32, u32),
@@ -61,6 +69,8 @@ pub struct App {
     pointer: (i32, i32),
     panning: bool,
     brush: BrushTool,
+    eraser: EraserTool,
+    active_tool: ActiveTool,
     brush_color: usize,
     editor_notice: Option<&'static str>,
     rerender: bool,
@@ -82,6 +92,8 @@ impl App {
             pointer: (0, 0),
             panning: false,
             brush: BrushTool::default(),
+            eraser: EraserTool::default(),
+            active_tool: ActiveTool::Brush,
             brush_color: 0,
             editor_notice: None,
             rerender: false,
@@ -102,8 +114,8 @@ impl App {
                     self.canvas_view.pan(x - self.pointer.0, y - self.pointer.1);
                 }
                 self.pointer = (x, y);
-                if self.brush.is_active() {
-                    self.move_brush(x, y);
+                if self.tool_is_active() {
+                    self.move_tool(x, y);
                 }
             }
             Event::MouseDown {
@@ -118,14 +130,14 @@ impl App {
             Event::MouseDown {
                 button: MouseButton::Left,
             } if self.state == AppState::Editor => {
-                self.begin_brush(self.pointer.0, self.pointer.1);
+                self.begin_tool(self.pointer.0, self.pointer.1);
             }
             Event::MouseUp {
                 button: MouseButton::Middle,
             } => self.panning = false,
             Event::MouseUp {
                 button: MouseButton::Left,
-            } => self.brush.pointer_up(),
+            } => self.end_tool(),
             Event::MouseWheel { delta }
                 if self.state == AppState::Editor
                     && self
@@ -268,8 +280,19 @@ impl App {
         let layer_count = document.layers.len();
         let layer_visible = document.active_layer().visible;
         let layer_opacity = document.active_layer().opacity;
-        let brush_size = self.brush.settings.radius * 2 + 1;
-        let brush_opacity = self.brush.settings.opacity;
+        let (tool_name, tool_radius, tool_opacity) = match self.active_tool {
+            ActiveTool::Brush => (
+                "BRUSH",
+                self.brush.settings.radius,
+                self.brush.settings.opacity,
+            ),
+            ActiveTool::Eraser => (
+                "ERASER",
+                self.eraser.settings.radius,
+                self.eraser.settings.opacity,
+            ),
+        };
+        let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
         let brush_color_name = BRUSH_COLORS[self.brush_color].1;
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
@@ -301,71 +324,125 @@ impl App {
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
         self.ui.label(framebuffer, 20, 82, "TOOLS");
-        self.ui.label(framebuffer, 20, 116, "BRUSH");
+        if self.ui.button(
+            framebuffer,
+            SELECT_BRUSH_BUTTON,
+            Rect::new(8, 108, 104, 32),
+            "BRUSH",
+        ) {
+            self.end_tool();
+            self.active_tool = ActiveTool::Brush;
+            self.rerender = true;
+        }
+        if self.ui.button(
+            framebuffer,
+            SELECT_ERASER_BUTTON,
+            Rect::new(8, 144, 104, 32),
+            "ERASER",
+        ) {
+            self.end_tool();
+            self.active_tool = ActiveTool::Eraser;
+            self.rerender = true;
+        }
+
         self.ui
-            .label(framebuffer, 20, 146, &format!("SIZE {brush_size}"));
+            .label(framebuffer, 20, 192, &format!("{tool_name} SIZE"));
+        self.ui.label(framebuffer, 20, 216, &format!("{tool_size}"));
         if self.ui.button(
             framebuffer,
             BRUSH_SIZE_DOWN_BUTTON,
-            Rect::new(8, 166, 50, 32),
+            Rect::new(8, 238, 50, 32),
             "LESS",
         ) {
-            self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1);
+            match self.active_tool {
+                ActiveTool::Brush => {
+                    self.brush.settings.radius = self.brush.settings.radius.saturating_sub(1)
+                }
+                ActiveTool::Eraser => {
+                    self.eraser.settings.radius = self.eraser.settings.radius.saturating_sub(1)
+                }
+            }
             self.rerender = true;
         }
         if self.ui.button(
             framebuffer,
             BRUSH_SIZE_UP_BUTTON,
-            Rect::new(62, 166, 50, 32),
+            Rect::new(62, 238, 50, 32),
             "MORE",
         ) {
-            self.brush.settings.radius = (self.brush.settings.radius + 1).min(127);
+            match self.active_tool {
+                ActiveTool::Brush => {
+                    self.brush.settings.radius = (self.brush.settings.radius + 1).min(127)
+                }
+                ActiveTool::Eraser => {
+                    self.eraser.settings.radius = (self.eraser.settings.radius + 1).min(127)
+                }
+            }
             self.rerender = true;
         }
 
-        self.ui.label(framebuffer, 20, 214, "COLOR");
-        self.ui.label(framebuffer, 20, 238, brush_color_name);
-        framebuffer.fill_rect(Rect::new(88, 234, 20, 20), brush_color);
-        framebuffer.draw_rect(Rect::new(88, 234, 20, 20), Color::rgb(225, 228, 232));
-        if self.ui.button(
-            framebuffer,
-            BRUSH_COLOR_BUTTON,
-            Rect::new(8, 260, 104, 32),
-            "NEXT",
-        ) {
-            self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
-            self.brush.settings.color = BRUSH_COLORS[self.brush_color].0;
-            self.rerender = true;
-        }
+        let alpha_y = if self.active_tool == ActiveTool::Brush {
+            self.ui.label(framebuffer, 20, 286, "COLOR");
+            self.ui.label(framebuffer, 20, 310, brush_color_name);
+            framebuffer.fill_rect(Rect::new(88, 306, 20, 20), brush_color);
+            framebuffer.draw_rect(Rect::new(88, 306, 20, 20), Color::rgb(225, 228, 232));
+            if self.ui.button(
+                framebuffer,
+                BRUSH_COLOR_BUTTON,
+                Rect::new(8, 332, 104, 32),
+                "NEXT",
+            ) {
+                self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
+                self.brush.settings.color = BRUSH_COLORS[self.brush_color].0;
+                self.rerender = true;
+            }
+            380
+        } else {
+            286
+        };
 
-        self.ui.label(framebuffer, 20, 308, "ALPHA");
+        self.ui.label(framebuffer, 20, alpha_y, "ALPHA");
         self.ui.label(
             framebuffer,
             20,
-            332,
-            &format!("{}%", (u16::from(brush_opacity) * 100 + 127) / 255),
+            alpha_y + 24,
+            &format!("{}%", (u16::from(tool_opacity) * 100 + 127) / 255),
         );
         if self.ui.button(
             framebuffer,
             BRUSH_ALPHA_DOWN_BUTTON,
-            Rect::new(8, 352, 50, 32),
+            Rect::new(8, alpha_y + 46, 50, 32),
             "LESS",
         ) {
-            self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32);
+            match self.active_tool {
+                ActiveTool::Brush => {
+                    self.brush.settings.opacity = self.brush.settings.opacity.saturating_sub(32)
+                }
+                ActiveTool::Eraser => {
+                    self.eraser.settings.opacity = self.eraser.settings.opacity.saturating_sub(32)
+                }
+            }
             self.rerender = true;
         }
         if self.ui.button(
             framebuffer,
             BRUSH_ALPHA_UP_BUTTON,
-            Rect::new(62, 352, 50, 32),
+            Rect::new(62, alpha_y + 46, 50, 32),
             "MORE",
         ) {
-            self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32);
+            match self.active_tool {
+                ActiveTool::Brush => {
+                    self.brush.settings.opacity = self.brush.settings.opacity.saturating_add(32)
+                }
+                ActiveTool::Eraser => {
+                    self.eraser.settings.opacity = self.eraser.settings.opacity.saturating_add(32)
+                }
+            }
             self.rerender = true;
         }
 
-        self.ui.label(framebuffer, 20, 410, "PAN");
-        self.ui.label(framebuffer, 20, 434, "MIDDLE");
+        self.ui.label(framebuffer, 20, 484, "PAN");
+        self.ui.label(framebuffer, 20, 508, "MIDDLE");
         self.ui
             .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
@@ -519,7 +596,7 @@ impl App {
         ) {
             self.state = AppState::NewDocument;
             self.panning = false;
-            self.brush.pointer_up();
+            self.end_tool();
             self.editor_notice = None;
             self.ui.clear_focus();
         }
@@ -568,7 +645,7 @@ impl App {
         self.validation_error = None;
         self.state = AppState::Editor;
         self.panning = false;
-        self.brush.pointer_up();
+        self.end_tool();
         self.editor_notice = None;
         self.ui.clear_focus();
     }
@@ -576,7 +653,7 @@ impl App {
     fn layer_changed(&mut self) {
         self.editor_notice = None;
         self.rerender = true;
-        self.brush.pointer_up();
+        self.end_tool();
     }
 
     fn canvas_pixel_at(&self, screen_x: i32, screen_y: i32) -> Option<(u32, u32)> {
@@ -591,7 +668,7 @@ impl App {
             .then_some((x as u32, y as u32))
     }
 
-    fn begin_brush(&mut self, screen_x: i32, screen_y: i32) {
+    fn begin_tool(&mut self, screen_x: i32, screen_y: i32) {
         let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
             return;
         };
@@ -599,20 +676,47 @@ impl App {
             return;
         }
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
-        self.brush.pointer_down(pixels, point);
+        match self.active_tool {
+            ActiveTool::Brush => self.brush.pointer_down(pixels, point),
+            ActiveTool::Eraser => self.eraser.pointer_down(pixels, point),
+        }
     }
 
-    fn move_brush(&mut self, screen_x: i32, screen_y: i32) {
+    fn move_tool(&mut self, screen_x: i32, screen_y: i32) {
         let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
-            self.brush.break_segment();
+            self.break_tool_segment();
             return;
         };
         if !self.document.as_ref().unwrap().active_layer().visible {
-            self.brush.break_segment();
+            self.break_tool_segment();
             return;
         }
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
-        self.brush.pointer_move(pixels, point);
+        match self.active_tool {
+            ActiveTool::Brush => self.brush.pointer_move(pixels, point),
+            ActiveTool::Eraser => self.eraser.pointer_move(pixels, point),
+        }
+    }
+
+    fn tool_is_active(&self) -> bool {
+        match self.active_tool {
+            ActiveTool::Brush => self.brush.is_active(),
+            ActiveTool::Eraser => self.eraser.is_active(),
+        }
+    }
+
+    fn end_tool(&mut self) {
+        match self.active_tool {
+            ActiveTool::Brush => self.brush.pointer_up(),
+            ActiveTool::Eraser => self.eraser.pointer_up(),
+        }
+    }
+
+    fn break_tool_segment(&mut self) {
+        match self.active_tool {
+            ActiveTool::Brush => self.brush.break_segment(),
+            ActiveTool::Eraser => self.eraser.break_segment(),
+        }
     }
 
     fn editor_viewport(&self) -> Rect {
