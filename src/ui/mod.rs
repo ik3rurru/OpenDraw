@@ -14,6 +14,8 @@ pub struct UiContext {
     activate_pressed: bool,
     pending_text: String,
     focused: Option<u32>,
+    dragging: Option<u32>,
+    slider_step: i8,
     focus_order: Vec<u32>,
 }
 
@@ -35,6 +37,12 @@ impl UiContext {
             Event::KeyDown {
                 key: Key::Backspace,
             } => self.backspace_pressed = true,
+            Event::KeyDown {
+                key: Key::Left | Key::Down,
+            } => self.slider_step = -1,
+            Event::KeyDown {
+                key: Key::Right | Key::Up,
+            } => self.slider_step = 1,
             Event::TextInput { character } if !character.is_control() => {
                 self.pending_text.push(*character);
             }
@@ -50,6 +58,7 @@ impl UiContext {
         self.mouse_pressed_at = None;
         self.backspace_pressed = false;
         self.activate_pressed = false;
+        self.slider_step = 0;
         self.pending_text.clear();
     }
 
@@ -177,6 +186,60 @@ impl UiContext {
         }
     }
 
+    pub fn slider(
+        &mut self,
+        framebuffer: &mut FrameBuffer,
+        id: u32,
+        rect: Rect,
+        value: &mut u8,
+        color: Color,
+    ) -> bool {
+        self.register_focus(id);
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(x, y)| rect.contains(x, y));
+        if pressed {
+            self.focused = Some(id);
+            self.dragging = Some(id);
+        }
+
+        let previous = *value;
+        if pressed || self.dragging == Some(id) {
+            let maximum = rect.width.saturating_sub(1);
+            if maximum > 0 {
+                let position = (self.pointer.0 - rect.x).clamp(0, maximum as i32) as u32;
+                *value = ((position * 255 + maximum / 2) / maximum) as u8;
+            }
+            if !self.left_down {
+                self.dragging = None;
+            }
+        } else if self.focused == Some(id) {
+            match self.slider_step {
+                -1 => *value = value.saturating_sub(1),
+                1 => *value = value.saturating_add(1),
+                _ => {}
+            }
+        }
+
+        framebuffer.fill_rect(rect, Color::rgb(22, 25, 30));
+        let filled = (u32::from(*value) * rect.width).div_ceil(255);
+        framebuffer.fill_rect(Rect::new(rect.x, rect.y, filled, rect.height), color);
+        framebuffer.draw_rect(
+            rect,
+            if self.focused == Some(id) {
+                Color::rgb(90, 155, 230)
+            } else {
+                Color::rgb(120, 130, 145)
+            },
+        );
+        let thumb_x = rect.x + (u32::from(*value) * rect.width.saturating_sub(1) / 255) as i32;
+        framebuffer.fill_rect(
+            Rect::new(thumb_x - 2, rect.y + 2, 4, rect.height.saturating_sub(4)),
+            Color::rgb(255, 255, 255),
+        );
+        previous != *value
+    }
+
     pub fn radio_button(
         &mut self,
         framebuffer: &mut FrameBuffer,
@@ -267,5 +330,31 @@ mod tests {
         });
         ui.text_input(&mut framebuffer, 1, rect, &mut value);
         assert!(value.is_empty());
+    }
+
+    #[test]
+    fn slider_supports_pointer_and_keyboard_adjustment() {
+        let mut ui = UiContext::default();
+        let mut framebuffer = FrameBuffer::default();
+        let mut value = 0;
+        let rect = Rect::new(10, 10, 101, 20);
+        framebuffer.resize(130, 40);
+
+        ui.handle_event(&Event::MouseMove { x: 110, y: 20 });
+        ui.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        assert!(ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0)));
+        assert_eq!(value, 255);
+        ui.end_frame();
+        ui.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0));
+        ui.end_frame();
+
+        ui.handle_event(&Event::KeyDown { key: Key::Left });
+        assert!(ui.slider(&mut framebuffer, 1, rect, &mut value, Color::rgb(255, 0, 0)));
+        assert_eq!(value, 254);
     }
 }

@@ -25,19 +25,18 @@ const ADD_LAYER_BUTTON: u32 = 15;
 const DELETE_LAYER_BUTTON: u32 = 16;
 const BRUSH_SIZE_DOWN_BUTTON: u32 = 17;
 const BRUSH_SIZE_UP_BUTTON: u32 = 18;
-const BRUSH_COLOR_BUTTON: u32 = 19;
+const OPEN_COLOR_PICKER_BUTTON: u32 = 19;
 const BRUSH_ALPHA_DOWN_BUTTON: u32 = 20;
 const BRUSH_ALPHA_UP_BUTTON: u32 = 21;
 const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
 const SELECT_EYEDROPPER_BUTTON: u32 = 24;
 const SELECT_BUCKET_BUTTON: u32 = 25;
-const BRUSH_COLORS: [Color; 4] = [
-    Color::rgb(24, 24, 24),
-    Color::rgb(210, 60, 60),
-    Color::rgb(55, 170, 90),
-    Color::rgb(60, 120, 220),
-];
+const RED_SLIDER: u32 = 26;
+const GREEN_SLIDER: u32 = 27;
+const BLUE_SLIDER: u32 = 28;
+const ALPHA_SLIDER: u32 = 29;
+const COLOR_PICKER_DONE_BUTTON: u32 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -75,7 +74,7 @@ pub struct App {
     brush: BrushTool,
     eraser: EraserTool,
     active_tool: ActiveTool,
-    brush_color: usize,
+    color_picker_open: bool,
     editor_notice: Option<&'static str>,
     rerender: bool,
 }
@@ -98,7 +97,7 @@ impl App {
             brush: BrushTool::default(),
             eraser: EraserTool::default(),
             active_tool: ActiveTool::Brush,
-            brush_color: 0,
+            color_picker_open: false,
             editor_notice: None,
             rerender: false,
         }
@@ -133,7 +132,7 @@ impl App {
             }
             Event::MouseDown {
                 button: MouseButton::Left,
-            } if self.state == AppState::Editor => {
+            } if self.state == AppState::Editor && !self.color_picker_open => {
                 self.begin_tool(self.pointer.0, self.pointer.1);
             }
             Event::MouseUp {
@@ -157,6 +156,10 @@ impl App {
             Event::KeyDown {
                 key: Key::Backspace,
             } => self.validation_error = None,
+            Event::KeyDown { key: Key::Escape } if self.color_picker_open => {
+                self.color_picker_open = false;
+                self.ui.clear_focus();
+            }
             _ => {}
         }
     }
@@ -300,10 +303,11 @@ impl App {
         let tool_size = tool_radius * 2 + 1;
         let brush_color = self.brush.settings.color;
         let brush_color_hex = format!(
-            "{:02X}{:02X}{:02X}",
+            "{:02X}{:02X}{:02X}{:02X}",
             brush_color.red(),
             brush_color.green(),
-            brush_color.blue()
+            brush_color.blue(),
+            self.brush.settings.opacity
         );
         framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
 
@@ -333,6 +337,10 @@ impl App {
         );
 
         self.ui.label(framebuffer, 20, 20, "OPENDRAW");
+        if self.color_picker_open {
+            self.render_color_picker(framebuffer);
+            return;
+        }
         self.ui.label(framebuffer, 20, 82, "TOOLS");
         if self.ui.button(
             framebuffer,
@@ -437,13 +445,13 @@ impl App {
             if self.active_tool != ActiveTool::Eyedropper
                 && self.ui.button(
                     framebuffer,
-                    BRUSH_COLOR_BUTTON,
+                    OPEN_COLOR_PICKER_BUTTON,
                     Rect::new(8, color_y + 46, 104, 32),
-                    "NEXT",
+                    "EDIT",
                 )
             {
-                self.brush_color = (self.brush_color + 1) % BRUSH_COLORS.len();
-                self.brush.settings.color = BRUSH_COLORS[self.brush_color];
+                self.end_tool();
+                self.color_picker_open = true;
                 self.rerender = true;
             }
         }
@@ -657,9 +665,82 @@ impl App {
             self.state = AppState::NewDocument;
             self.panning = false;
             self.end_tool();
+            self.color_picker_open = false;
             self.editor_notice = None;
             self.ui.clear_focus();
         }
+    }
+
+    fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
+        let mut red = self.brush.settings.color.red();
+        let mut green = self.brush.settings.color.green();
+        let mut blue = self.brush.settings.color.blue();
+        let mut alpha = self.brush.settings.opacity;
+        let preview = Rect::new(20, 108, 80, 48);
+
+        self.ui.label(framebuffer, 20, 82, "COLOR");
+        framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
+        framebuffer.fill_rect(Rect::new(60, 108, 40, 24), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(20, 132, 40, 24), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(preview, Color::rgba(red, green, blue, alpha));
+        framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
+        self.ui.label(
+            framebuffer,
+            20,
+            170,
+            &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
+        );
+
+        self.ui.label(framebuffer, 20, 202, &format!("R {red}"));
+        let mut changed = self.ui.slider(
+            framebuffer,
+            RED_SLIDER,
+            Rect::new(8, 222, 104, 20),
+            &mut red,
+            Color::rgb(210, 60, 60),
+        );
+        self.ui.label(framebuffer, 20, 252, &format!("G {green}"));
+        changed |= self.ui.slider(
+            framebuffer,
+            GREEN_SLIDER,
+            Rect::new(8, 272, 104, 20),
+            &mut green,
+            Color::rgb(55, 170, 90),
+        );
+        self.ui.label(framebuffer, 20, 302, &format!("B {blue}"));
+        changed |= self.ui.slider(
+            framebuffer,
+            BLUE_SLIDER,
+            Rect::new(8, 322, 104, 20),
+            &mut blue,
+            Color::rgb(60, 120, 220),
+        );
+        self.ui.label(framebuffer, 20, 352, &format!("A {alpha}"));
+        changed |= self.ui.slider(
+            framebuffer,
+            ALPHA_SLIDER,
+            Rect::new(8, 372, 104, 20),
+            &mut alpha,
+            Color::rgb(225, 228, 232),
+        );
+        if changed {
+            self.brush.settings.color = Color::rgb(red, green, blue);
+            self.brush.settings.opacity = alpha;
+            self.rerender = true;
+        }
+
+        if self.ui.button(
+            framebuffer,
+            COLOR_PICKER_DONE_BUTTON,
+            Rect::new(8, 416, 104, 32),
+            "DONE",
+        ) {
+            self.color_picker_open = false;
+            self.rerender = true;
+            self.ui.clear_focus();
+        }
+        self.ui.label(framebuffer, 20, 500, "PAN");
+        self.ui.label(framebuffer, 20, 524, "MIDDLE");
     }
 
     fn create_document(&mut self) {
@@ -706,6 +787,7 @@ impl App {
         self.state = AppState::Editor;
         self.panning = false;
         self.end_tool();
+        self.color_picker_open = false;
         self.editor_notice = None;
         self.ui.clear_focus();
     }
