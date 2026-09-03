@@ -1,6 +1,6 @@
 use std::{ffi::c_void, io, mem::size_of, ptr};
 
-use crate::graphics::{Color, FrameBuffer};
+use crate::graphics::{Color, FrameBuffer, Rect};
 
 use super::ffi::*;
 
@@ -102,7 +102,7 @@ unsafe extern "system" fn window_proc(
                 let height = (rect.bottom - rect.top).max(0) as u32;
                 let framebuffer = unsafe { &mut (*state).framebuffer };
                 framebuffer.resize(width, height);
-                framebuffer.checkerboard(24, Color::rgb(224, 224, 224), Color::rgb(176, 176, 176));
+                draw_test_scene(framebuffer);
                 unsafe { InvalidateRect(window, ptr::null(), 0) };
             }
             0
@@ -127,6 +127,28 @@ unsafe extern "system" fn window_proc(
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
+}
+
+fn draw_test_scene(framebuffer: &mut FrameBuffer) {
+    framebuffer.checkerboard(24, Color::rgb(224, 224, 224), Color::rgb(176, 176, 176));
+
+    let right = framebuffer.width.saturating_sub(1).min(i32::MAX as u32) as i32;
+    let bottom = framebuffer.height.saturating_sub(1).min(i32::MAX as u32) as i32;
+    let center_x = right / 2;
+    let center_y = bottom / 2;
+
+    framebuffer.draw_line(0, 0, right, bottom, Color::rgb(220, 50, 47));
+    framebuffer.draw_line(right, 0, 0, bottom, Color::rgb(38, 139, 210));
+    framebuffer.fill_rect(
+        Rect::new(center_x - 160, center_y - 90, 320, 180),
+        Color::rgba(108, 113, 196, 160),
+    );
+    framebuffer.draw_rect(
+        Rect::new(center_x - 160, center_y - 90, 320, 180),
+        Color::rgb(88, 90, 100),
+    );
+    framebuffer.fill_circle(center_x, center_y, 64, Color::rgba(133, 153, 0, 180));
+    framebuffer.draw_circle(center_x, center_y, 64, Color::rgb(255, 255, 255));
 }
 
 unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
