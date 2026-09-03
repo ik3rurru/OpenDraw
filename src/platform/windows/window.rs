@@ -160,18 +160,43 @@ impl Window {
         self.document_path(true)
     }
 
+    pub fn export_image_path(&self) -> io::Result<Option<(PathBuf, u32)>> {
+        self.path_dialog(
+            true,
+            "PNG image (*.png)\0*.png\0BMP image (*.bmp)\0*.bmp\0",
+            "Export image",
+            None,
+        )
+    }
+
     fn document_path(&self, save: bool) -> io::Result<Option<PathBuf>> {
+        self.path_dialog(
+            save,
+            "OpenDraw (*.odraw)\0*.odraw\0All files (*.*)\0*.*\0",
+            if save {
+                "Save OpenDraw document"
+            } else {
+                "Open OpenDraw document"
+            },
+            Some("odraw"),
+        )
+        .map(|selection| selection.map(|(path, _)| path))
+    }
+
+    fn path_dialog(
+        &self,
+        save: bool,
+        filter: &str,
+        title: &str,
+        extension: Option<&str>,
+    ) -> io::Result<Option<(PathBuf, u32)>> {
         // SAFETY: ReleaseCapture takes no pointers. A framebuffer button activates
         // on mouse-down, so the modal dialog must own subsequent pointer input.
         unsafe { ReleaseCapture() };
         let mut path = [0_u16; 32_768];
-        let filter = wide("OpenDraw (*.odraw)\0*.odraw\0All files (*.*)\0*.*\0");
-        let title = wide(if save {
-            "Save OpenDraw document"
-        } else {
-            "Open OpenDraw document"
-        });
-        let extension = wide("odraw");
+        let filter = wide(filter);
+        let title = wide(title);
+        let extension = extension.map(wide);
         let mut dialog = OPENFILENAMEW {
             lStructSize: size_of::<OPENFILENAMEW>() as u32,
             hwndOwner: self.handle,
@@ -180,7 +205,9 @@ impl Window {
             lpstrFile: path.as_mut_ptr(),
             nMaxFile: path.len() as u32,
             lpstrTitle: title.as_ptr(),
-            lpstrDefExt: extension.as_ptr(),
+            lpstrDefExt: extension
+                .as_ref()
+                .map_or(ptr::null(), |extension| extension.as_ptr()),
             Flags: OFN_EXPLORER
                 | OFN_NOCHANGEDIR
                 | OFN_PATHMUSTEXIST
@@ -219,7 +246,10 @@ impl Window {
             .iter()
             .position(|unit| *unit == 0)
             .unwrap_or(path.len());
-        Ok(Some(PathBuf::from(OsString::from_wide(&path[..length]))))
+        Ok(Some((
+            PathBuf::from(OsString::from_wide(&path[..length])),
+            dialog.nFilterIndex,
+        )))
     }
 }
 

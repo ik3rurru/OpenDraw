@@ -2,6 +2,9 @@
 //! followed by each UTF-8 name, visibility, opacity and `0xAARRGGBB` pixels.
 //! Every integer is little-endian; layer pixels are stored from top-left by rows.
 
+mod bmp;
+mod png;
+
 use std::{
     fmt,
     fs::File,
@@ -15,6 +18,21 @@ const MAGIC: &[u8; 4] = b"ODRW";
 const VERSION: u32 = 1;
 const MAX_LAYER_NAME_BYTES: usize = 4_096;
 const PIXELS_PER_CHUNK: usize = 4_096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageFormat {
+    Bmp,
+    Png,
+}
+
+impl ImageFormat {
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Bmp => "bmp",
+            Self::Png => "png",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum OdrawError {
@@ -61,6 +79,17 @@ pub fn save(document: &Document, path: &Path) -> Result<(), OdrawError> {
 
 pub fn load(path: &Path) -> Result<Document, OdrawError> {
     read_document(&mut BufReader::new(File::open(path)?))
+}
+
+pub fn export(document: &Document, path: &Path, format: ImageFormat) -> io::Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    match format {
+        ImageFormat::Bmp => bmp::write(document, &mut writer)?,
+        ImageFormat::Png => png::write(document, &mut writer)?,
+    }
+    writer.flush()?;
+    writer.get_ref().sync_all()
 }
 
 fn write_document(document: &Document, writer: &mut impl Write) -> Result<(), OdrawError> {

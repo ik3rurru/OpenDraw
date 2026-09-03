@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     document::{CanvasView, Document, DocumentError, Layer},
-    file::{self, OdrawError},
+    file::{self, ImageFormat, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
     tools::{BrushTool, EraserTool, Tool},
@@ -38,6 +38,7 @@ const COLOR_SQUARE: u32 = 33;
 const HUE_SLIDER: u32 = 34;
 const OPEN_DOCUMENT_BUTTON: u32 = 35;
 const SAVE_DOCUMENT_BUTTON: u32 = 36;
+const EXPORT_IMAGE_BUTTON: u32 = 37;
 const LAYER_ROW_BASE: u32 = 1_000;
 const LAYER_VISIBILITY_BASE: u32 = 2_000;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
@@ -76,12 +77,14 @@ enum EditorIcon {
     Trash,
     Folder,
     Save,
+    Export,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileCommand {
     Open,
     Save,
+    Export,
 }
 
 pub struct App {
@@ -201,6 +204,17 @@ impl App {
         Ok(())
     }
 
+    pub fn export_document(&mut self, path: &Path, format: ImageFormat) -> std::io::Result<()> {
+        let result = file::export(self.document.as_ref().unwrap(), path, format);
+        self.editor_notice = Some(if result.is_ok() {
+            "IMAGE EXPORTED"
+        } else {
+            "EXPORT FAILED"
+        });
+        self.rerender = true;
+        result
+    }
+
     pub fn report_file_dialog_error(&mut self) {
         self.editor_notice = Some("FILE DIALOG FAILED");
         self.rerender = true;
@@ -290,6 +304,11 @@ impl App {
                 key: Key::Letter('S'),
             } if self.control_down && self.state == AppState::Editor => {
                 self.pending_file_command = Some(FileCommand::Save)
+            }
+            Event::KeyDown {
+                key: Key::Letter('E'),
+            } if self.control_down && self.state == AppState::Editor => {
+                self.pending_file_command = Some(FileCommand::Export)
             }
             _ => {}
         }
@@ -489,6 +508,14 @@ impl App {
             EditorIcon::Save,
         ) {
             self.pending_file_command = Some(FileCommand::Save);
+        }
+        if self.icon_button(
+            framebuffer,
+            EXPORT_IMAGE_BUTTON,
+            Rect::new(460, 9, 48, 38),
+            EditorIcon::Export,
+        ) {
+            self.pending_file_command = Some(FileCommand::Export);
         }
         self.ui.label(framebuffer, 20, 66, "TOOLS");
         if self.icon_button(
@@ -767,7 +794,10 @@ impl App {
                 EDITOR_LEFT_WIDTH as i32 + 172,
                 window_height - 25,
                 notice,
-                if matches!(notice, "DOCUMENT SAVED" | "DOCUMENT OPENED") {
+                if matches!(
+                    notice,
+                    "DOCUMENT SAVED" | "DOCUMENT OPENED" | "IMAGE EXPORTED"
+                ) {
                     Color::rgb(90, 205, 130)
                 } else {
                     Color::rgb(230, 90, 80)
@@ -1141,6 +1171,14 @@ impl App {
                 framebuffer.draw_rect(Rect::new(x - 10, y - 11, 21, 22), color);
                 framebuffer.draw_rect(Rect::new(x - 5, y - 9, 10, 7), color);
                 framebuffer.draw_rect(Rect::new(x - 6, y + 3, 13, 8), color);
+            }
+            EditorIcon::Export => {
+                framebuffer.draw_line(x, y - 11, x, y + 3, color);
+                framebuffer.draw_line(x, y + 3, x - 6, y - 3, color);
+                framebuffer.draw_line(x, y + 3, x + 6, y - 3, color);
+                framebuffer.draw_line(x - 10, y + 10, x + 10, y + 10, color);
+                framebuffer.draw_line(x - 10, y + 4, x - 10, y + 10, color);
+                framebuffer.draw_line(x + 10, y + 4, x + 10, y + 10, color);
             }
         }
     }
@@ -1766,5 +1804,31 @@ mod tests {
         assert!(app.open_document(&path).is_err());
         assert_eq!(app.document.as_ref().unwrap().layers[0].name, "CURRENT");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn exports_png_and_bmp_from_the_keyboard_command() {
+        let base = std::env::temp_dir().join(format!("opendraw-{}-export", std::process::id()));
+        let png_path = base.with_extension("png");
+        let bmp_path = base.with_extension("bmp");
+        let mut app = App::new();
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(2, 2, Color::rgba(0, 0, 0, 0)).unwrap());
+
+        app.handle_event(Event::KeyDown { key: Key::Control });
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('E'),
+        });
+        assert_eq!(app.take_file_command(), Some(FileCommand::Export));
+        app.export_document(&png_path, ImageFormat::Png).unwrap();
+        app.export_document(&bmp_path, ImageFormat::Bmp).unwrap();
+        assert_eq!(
+            &std::fs::read(&png_path).unwrap()[..8],
+            b"\x89PNG\r\n\x1a\n"
+        );
+        assert_eq!(&std::fs::read(&bmp_path).unwrap()[..2], b"BM");
+
+        std::fs::remove_file(png_path).unwrap();
+        std::fs::remove_file(bmp_path).unwrap();
     }
 }
