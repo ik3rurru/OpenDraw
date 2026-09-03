@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: creación validada de documentos y transición al editor en Windows.
+Estado actual: documentos raster reales con una capa, lienzo, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -13,6 +13,7 @@ cargo run
 ```
 
 El programa permite elegir dimensiones y fondo blanco o transparente antes de entrar
-en el editor provisional. Todo se dibuja directamente en un `Vec<u32>`.
+en el editor. Todo se dibuja directamente en búferes `Vec<u32>`.
 
 Haz clic en el campo para escribir; `Tab` cambia el foco y `Enter` o espacio activa el botón.
+En el lienzo, la rueda controla el zoom y el botón central permite desplazar la vista.

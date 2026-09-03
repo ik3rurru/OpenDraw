@@ -1,6 +1,7 @@
 use crate::{
+    document::{CanvasView, Document, DocumentError},
     graphics::{Color, FrameBuffer, Rect},
-    platform::{Event, Key},
+    platform::{Event, Key, MouseButton},
     ui::UiContext,
 };
 
@@ -22,11 +23,7 @@ enum Background {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppState {
     NewDocument,
-    Editor {
-        width: u32,
-        height: u32,
-        background: Background,
-    },
+    Editor,
 }
 
 pub struct App {
@@ -38,6 +35,10 @@ pub struct App {
     height_input: String,
     background: Background,
     validation_error: Option<&'static str>,
+    document: Option<Document>,
+    canvas_view: CanvasView,
+    pointer: (i32, i32),
+    panning: bool,
 }
 
 impl App {
@@ -51,6 +52,10 @@ impl App {
             height_input: String::from("1080"),
             background: Background::White,
             validation_error: None,
+            document: None,
+            canvas_view: CanvasView::default(),
+            pointer: (0, 0),
+            panning: false,
         }
     }
 
@@ -63,6 +68,33 @@ impl App {
         match event {
             Event::CloseRequested => self.running = false,
             Event::Resized { width, height } => self.window_size = (width, height),
+            Event::MouseMove { x, y } => {
+                if self.panning {
+                    self.canvas_view.pan(x - self.pointer.0, y - self.pointer.1);
+                }
+                self.pointer = (x, y);
+            }
+            Event::MouseDown {
+                button: MouseButton::Middle,
+            } if self.state == AppState::Editor
+                && self
+                    .editor_viewport()
+                    .contains(self.pointer.0, self.pointer.1) =>
+            {
+                self.panning = true;
+            }
+            Event::MouseUp {
+                button: MouseButton::Middle,
+            } => self.panning = false,
+            Event::MouseWheel { delta }
+                if self.state == AppState::Editor
+                    && self
+                        .editor_viewport()
+                        .contains(self.pointer.0, self.pointer.1) =>
+            {
+                self.canvas_view
+                    .zoom_at(1.1_f32.powf(delta), self.pointer.0, self.pointer.1);
+            }
             Event::TextInput { character } if !character.is_control() => {
                 self.validation_error = None
             }
@@ -82,16 +114,14 @@ impl App {
     }
 
     fn render_current_state(&mut self, framebuffer: &mut FrameBuffer) {
-        framebuffer.checkerboard(24, Color::rgb(224, 224, 224), Color::rgb(176, 176, 176));
         self.ui.begin_frame();
 
         match self.state {
-            AppState::NewDocument => self.render_new_document(framebuffer),
-            AppState::Editor {
-                width,
-                height,
-                background,
-            } => self.render_editor(framebuffer, width, height, background),
+            AppState::NewDocument => {
+                framebuffer.checkerboard(24, Color::rgb(224, 224, 224), Color::rgb(176, 176, 176));
+                self.render_new_document(framebuffer);
+            }
+            AppState::Editor => self.render_editor(framebuffer),
         }
 
         self.ui.end_frame();
@@ -179,49 +209,76 @@ impl App {
         }
     }
 
-    fn render_editor(
-        &mut self,
-        framebuffer: &mut FrameBuffer,
-        width: u32,
-        height: u32,
-        background: Background,
-    ) {
-        let (center_x, center_y) = self.window_center();
-        let panel = Rect::new(center_x - 300, center_y - 190, 600, 380);
-        self.ui.panel(framebuffer, panel);
-        self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 26, "EDITOR");
+    fn render_editor(&mut self, framebuffer: &mut FrameBuffer) {
+        let viewport = self.editor_viewport();
+        let document = self.document.as_ref().expect("editor needs a document");
+        let window_width = self.window_size.0.min(i32::MAX as u32) as i32;
+        let window_height = self.window_size.1.min(i32::MAX as u32) as i32;
 
-        let preview = Rect::new(panel.x + 28, panel.y + 70, 544, 200);
-        framebuffer.fill_rect(
-            preview,
-            match background {
-                Background::Transparent => Color::rgb(176, 176, 176),
-                Background::White => Color::rgb(255, 255, 255),
-            },
+        framebuffer.clear(Color::rgb(27, 30, 35));
+        framebuffer.fill_rect(viewport, Color::rgb(45, 49, 56));
+        self.canvas_view.render(document, framebuffer, viewport);
+        framebuffer.draw_rect(viewport, Color::rgb(80, 86, 96));
+
+        self.ui
+            .panel(framebuffer, Rect::new(0, 0, self.window_size.0, 56));
+        self.ui.panel(
+            framebuffer,
+            Rect::new(0, 56, 120, self.window_size.1.saturating_sub(56)),
         );
-        framebuffer.draw_rect(preview, Color::rgb(90, 155, 230));
+        self.ui.panel(
+            framebuffer,
+            Rect::new(
+                window_width - 180,
+                56,
+                180,
+                self.window_size.1.saturating_sub(56),
+            ),
+        );
+        self.ui.panel(
+            framebuffer,
+            Rect::new(
+                120,
+                window_height - 36,
+                self.window_size.0.saturating_sub(300),
+                36,
+            ),
+        );
 
-        let dimensions = format!("{width} X {height}");
+        self.ui.label(framebuffer, 20, 20, "OPENDRAW");
+        self.ui.label(framebuffer, 20, 82, "TOOLS");
+        self.ui.label(framebuffer, 20, 116, "PAN");
+        self.ui.label(framebuffer, 20, 140, "MIDDLE");
         self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 294, &dimensions);
+            .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
             framebuffer,
-            panel.x + 28,
-            panel.y + 330,
-            match background {
-                Background::Transparent => "TRANSPARENT",
-                Background::White => "WHITE BACKGROUND",
-            },
+            window_width - 160,
+            116,
+            &format!("{} X {}", document.width, document.height),
+        );
+        self.ui.label(framebuffer, window_width - 160, 160, "LAYER");
+        self.ui.label(
+            framebuffer,
+            window_width - 160,
+            194,
+            &document.active_layer().name,
+        );
+        self.ui.label(
+            framebuffer,
+            136,
+            window_height - 25,
+            &format!("ZOOM {}%", (self.canvas_view.zoom * 100.0).round() as u32),
         );
 
         if self.ui.button(
             framebuffer,
             NEW_DOCUMENT_BUTTON,
-            Rect::new(panel.x + 372, panel.y + 302, 200, 48),
-            "NEW DOCUMENT",
+            Rect::new(window_width - 168, 9, 156, 38),
+            "NEW DOC",
         ) {
             self.state = AppState::NewDocument;
+            self.panning = false;
             self.ui.clear_focus();
         }
     }
@@ -244,13 +301,41 @@ impl App {
             return;
         }
 
-        self.validation_error = None;
-        self.state = AppState::Editor {
-            width,
-            height,
-            background: self.background,
+        let background = match self.background {
+            Background::Transparent => Color::rgba(0, 0, 0, 0),
+            Background::White => Color::rgb(255, 255, 255),
         };
+        let document = match Document::new(width, height, background) {
+            Ok(document) => document,
+            Err(DocumentError::TooLarge) => {
+                self.validation_error = Some("MAX 64 MILLION PIXELS");
+                return;
+            }
+            Err(DocumentError::AllocationFailed) => {
+                self.validation_error = Some("NOT ENOUGH MEMORY");
+                return;
+            }
+            Err(DocumentError::InvalidDimensions) => {
+                self.validation_error = Some("SIZE MUST BE ABOVE 0");
+                return;
+            }
+        };
+
+        self.canvas_view = CanvasView::fit(&document, self.editor_viewport());
+        self.document = Some(document);
+        self.validation_error = None;
+        self.state = AppState::Editor;
+        self.panning = false;
         self.ui.clear_focus();
+    }
+
+    fn editor_viewport(&self) -> Rect {
+        Rect::new(
+            120,
+            56,
+            self.window_size.0.saturating_sub(300),
+            self.window_size.1.saturating_sub(92),
+        )
     }
 
     fn window_center(&self) -> (i32, i32) {
@@ -279,14 +364,14 @@ mod tests {
 
         app.width_input = String::from("640");
         app.height_input = String::from("480");
+        app.window_size = (1000, 700);
         app.create_document();
+        assert_eq!(app.state, AppState::Editor);
+        let document = app.document.as_ref().unwrap();
+        assert_eq!((document.width, document.height), (640, 480));
         assert_eq!(
-            app.state,
-            AppState::Editor {
-                width: 640,
-                height: 480,
-                background: Background::White,
-            }
+            document.active_layer().pixels.get_pixel(0, 0),
+            Some(Color::rgb(255, 255, 255))
         );
     }
 }

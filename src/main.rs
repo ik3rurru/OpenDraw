@@ -1,4 +1,5 @@
 mod app;
+mod document;
 mod graphics;
 mod platform;
 mod ui;
