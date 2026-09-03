@@ -4,7 +4,7 @@ use crate::{
     document::{CanvasView, Document, DocumentError, Layer},
     file::{self, ImageFormat, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
-    platform::{Event, Key, MouseButton},
+    platform::{DecodedImage, Event, Key, MouseButton},
     tools::{BrushTool, EraserTool, Tool},
     ui::UiContext,
 };
@@ -39,6 +39,7 @@ const HUE_SLIDER: u32 = 34;
 const OPEN_DOCUMENT_BUTTON: u32 = 35;
 const SAVE_DOCUMENT_BUTTON: u32 = 36;
 const EXPORT_IMAGE_BUTTON: u32 = 37;
+const IMPORT_IMAGE_BUTTON: u32 = 38;
 const LAYER_ROW_BASE: u32 = 1_000;
 const LAYER_VISIBILITY_BASE: u32 = 2_000;
 const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
@@ -77,6 +78,7 @@ enum EditorIcon {
     Trash,
     Folder,
     Save,
+    Import,
     Export,
 }
 
@@ -84,6 +86,7 @@ enum EditorIcon {
 pub enum FileCommand {
     Open,
     Save,
+    Import,
     Export,
 }
 
@@ -215,6 +218,42 @@ impl App {
         result
     }
 
+    pub fn import_image(&mut self, path: &Path, image: DecodedImage) -> Result<(), DocumentError> {
+        self.end_tool();
+        let snapshot = self.document.as_ref().unwrap().clone();
+        let name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("IMPORTED PNG")
+            .to_owned();
+        let result = self.document.as_mut().unwrap().import_layer(
+            name,
+            image.width,
+            image.height,
+            image.pixels,
+        );
+        self.editor_notice = Some(match result {
+            Ok(()) => {
+                self.remember(snapshot);
+                let viewport = self.editor_viewport();
+                self.canvas_view = CanvasView::fit(self.document.as_ref().unwrap(), viewport);
+                self.reveal_active_layer();
+                "IMAGE IMPORTED"
+            }
+            Err(DocumentError::AllocationFailed) => "NOT ENOUGH MEMORY",
+            Err(DocumentError::TooLarge) => "IMAGE TOO LARGE",
+            Err(DocumentError::InvalidDimensions) => "INVALID IMAGE",
+        });
+        self.rerender = true;
+        result
+    }
+
+    pub fn report_image_import_error(&mut self) {
+        self.editor_notice = Some("IMPORT FAILED");
+        self.rerender = true;
+    }
+
     pub fn report_file_dialog_error(&mut self) {
         self.editor_notice = Some("FILE DIALOG FAILED");
         self.rerender = true;
@@ -309,6 +348,11 @@ impl App {
                 key: Key::Letter('E'),
             } if self.control_down && self.state == AppState::Editor => {
                 self.pending_file_command = Some(FileCommand::Export)
+            }
+            Event::KeyDown {
+                key: Key::Letter('I'),
+            } if self.control_down && self.state == AppState::Editor => {
+                self.pending_file_command = Some(FileCommand::Import)
             }
             _ => {}
         }
@@ -511,8 +555,16 @@ impl App {
         }
         if self.icon_button(
             framebuffer,
-            EXPORT_IMAGE_BUTTON,
+            IMPORT_IMAGE_BUTTON,
             Rect::new(460, 9, 48, 38),
+            EditorIcon::Import,
+        ) {
+            self.pending_file_command = Some(FileCommand::Import);
+        }
+        if self.icon_button(
+            framebuffer,
+            EXPORT_IMAGE_BUTTON,
+            Rect::new(516, 9, 48, 38),
             EditorIcon::Export,
         ) {
             self.pending_file_command = Some(FileCommand::Export);
@@ -796,7 +848,7 @@ impl App {
                 notice,
                 if matches!(
                     notice,
-                    "DOCUMENT SAVED" | "DOCUMENT OPENED" | "IMAGE EXPORTED"
+                    "DOCUMENT SAVED" | "DOCUMENT OPENED" | "IMAGE IMPORTED" | "IMAGE EXPORTED"
                 ) {
                     Color::rgb(90, 205, 130)
                 } else {
@@ -1172,6 +1224,14 @@ impl App {
                 framebuffer.draw_rect(Rect::new(x - 5, y - 9, 10, 7), color);
                 framebuffer.draw_rect(Rect::new(x - 6, y + 3, 13, 8), color);
             }
+            EditorIcon::Import => {
+                framebuffer.draw_rect(Rect::new(x - 12, y - 9, 25, 19), color);
+                framebuffer.fill_circle(x + 7, y - 4, 2, color);
+                framebuffer.draw_line(x - 9, y + 6, x - 3, y, color);
+                framebuffer.draw_line(x - 3, y, x + 1, y + 4, color);
+                framebuffer.draw_line(x + 1, y + 4, x + 4, y + 1, color);
+                framebuffer.draw_line(x + 4, y + 1, x + 10, y + 7, color);
+            }
             EditorIcon::Export => {
                 framebuffer.draw_line(x, y - 11, x, y + 3, color);
                 framebuffer.draw_line(x, y + 3, x - 6, y - 3, color);
@@ -1221,8 +1281,15 @@ impl App {
             return;
         };
         self.end_tool();
+        let dimensions_changed = self.document.as_ref().is_some_and(|current| {
+            (current.width, current.height) != (previous.width, previous.height)
+        });
         let current = self.document.replace(previous).unwrap();
         self.redo_history.push(current);
+        if dimensions_changed {
+            self.canvas_view =
+                CanvasView::fit(self.document.as_ref().unwrap(), self.editor_viewport());
+        }
         self.layer_name_edit_recorded = None;
         self.reveal_active_layer();
         self.editor_notice = None;
@@ -1234,8 +1301,16 @@ impl App {
             return;
         };
         self.end_tool();
+        let dimensions_changed = self
+            .document
+            .as_ref()
+            .is_some_and(|current| (current.width, current.height) != (next.width, next.height));
         let current = self.document.replace(next).unwrap();
         self.undo_history.push(current);
+        if dimensions_changed {
+            self.canvas_view =
+                CanvasView::fit(self.document.as_ref().unwrap(), self.editor_viewport());
+        }
         self.layer_name_edit_recorded = None;
         self.reveal_active_layer();
         self.editor_notice = None;
@@ -1830,5 +1905,56 @@ mod tests {
 
         std::fs::remove_file(png_path).unwrap();
         std::fs::remove_file(bmp_path).unwrap();
+    }
+
+    #[test]
+    fn imports_png_as_an_undoable_layer() {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(2, 4, Color::rgb(255, 255, 255)).unwrap());
+
+        app.handle_event(Event::KeyDown { key: Key::Control });
+        app.handle_event(Event::KeyDown {
+            key: Key::Letter('I'),
+        });
+        assert_eq!(app.take_file_command(), Some(FileCommand::Import));
+
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700);
+        app.handle_event(Event::MouseMove { x: 480, y: 28 });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.render(&mut framebuffer);
+        assert_eq!(app.take_file_command(), Some(FileCommand::Import));
+        app.import_image(
+            Path::new("logo.png"),
+            DecodedImage {
+                width: 4,
+                height: 2,
+                pixels: vec![Color::rgb(20, 40, 60).as_u32(); 8],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                app.document.as_ref().unwrap().width,
+                app.document.as_ref().unwrap().height
+            ),
+            (4, 4)
+        );
+        assert_eq!(app.document.as_ref().unwrap().active_layer().name, "logo");
+
+        app.undo();
+        assert_eq!(
+            (
+                app.document.as_ref().unwrap().width,
+                app.document.as_ref().unwrap().height
+            ),
+            (2, 4)
+        );
+        app.redo();
+        assert_eq!(app.document.as_ref().unwrap().layers.len(), 2);
     }
 }

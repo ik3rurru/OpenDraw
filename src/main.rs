@@ -52,6 +52,21 @@ fn run() -> std::io::Result<()> {
                         eprintln!("OpenDraw: {error}");
                     }
                 }
+                app::FileCommand::Import => {
+                    if let Some(path) = dialog_selection(&mut app, window.import_image_path()) {
+                        match platform::decode_image(&path) {
+                            Ok(image) => {
+                                if let Err(error) = app.import_image(&path, image) {
+                                    eprintln!("OpenDraw: {error}");
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("OpenDraw: {error}");
+                                app.report_image_import_error();
+                            }
+                        }
+                    }
+                }
                 app::FileCommand::Export => {
                     if let Some((mut path, filter)) =
                         dialog_selection(&mut app, window.export_image_path())

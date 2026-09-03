@@ -2,7 +2,7 @@
 
 Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
 
-Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, archivos `.odraw`, exportación PNG/BMP, zoom y desplazamiento en Windows.
+Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, archivos `.odraw`, importación PNG, exportación PNG/BMP, zoom y desplazamiento en Windows.
 
 ## Ejecutar
 
@@ -38,3 +38,5 @@ versionado conserva dimensiones, capas, nombres, visibilidad, opacidad y píxele
 
 El botón de exportación o `Ctrl+E` guarda la composición visible como PNG o BMP.
 PNG conserva la transparencia; BMP aplana la imagen sobre un fondo blanco.
+El botón de imagen o `Ctrl+I` importa un PNG como capa nueva conservando su transparencia.
+La imagen se centra y el lienzo se amplía automáticamente si fuese necesario.

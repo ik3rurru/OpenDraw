@@ -3,14 +3,15 @@ use std::{
     ffi::{OsString, c_void},
     io,
     mem::size_of,
-    os::windows::ffi::OsStringExt,
-    path::PathBuf,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+    path::{Path, PathBuf},
     ptr,
 };
 
 use crate::{
+    document::MAX_PIXELS,
     graphics::FrameBuffer,
-    platform::{Event, Key, MouseButton},
+    platform::{DecodedImage, Event, Key, MouseButton},
 };
 
 use super::ffi::*;
@@ -169,6 +170,16 @@ impl Window {
         )
     }
 
+    pub fn import_image_path(&self) -> io::Result<Option<PathBuf>> {
+        self.path_dialog(
+            false,
+            "PNG image (*.png)\0*.png\0",
+            "Import PNG as layer",
+            None,
+        )
+        .map(|selection| selection.map(|(path, _)| path))
+    }
+
     fn document_path(&self, save: bool) -> io::Result<Option<PathBuf>> {
         self.path_dialog(
             save,
@@ -249,6 +260,108 @@ impl Window {
         Ok(Some((
             PathBuf::from(OsString::from_wide(&path[..length])),
             dialog.nFilterIndex,
+        )))
+    }
+}
+
+pub fn decode_image(path: &Path) -> io::Result<DecodedImage> {
+    let mut token = 0;
+    let input = GDIPLUS_STARTUP_INPUT {
+        GdiplusVersion: 1,
+        DebugEventCallback: ptr::null_mut(),
+        SuppressBackgroundThread: 0,
+        SuppressExternalCodecs: 0,
+    };
+    gdip_status(
+        unsafe { GdiplusStartup(&mut token, &input, ptr::null_mut()) },
+        "start image decoder",
+    )?;
+    let result = decode_started(path);
+    unsafe { GdiplusShutdown(token) };
+    result
+}
+
+fn decode_started(path: &Path) -> io::Result<DecodedImage> {
+    let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut bitmap = ptr::null_mut();
+    gdip_status(
+        unsafe { GdipCreateBitmapFromFile(path.as_ptr(), &mut bitmap) },
+        "open image",
+    )?;
+    if bitmap.is_null() {
+        return Err(io::Error::other("image decoder returned no bitmap"));
+    }
+    let result = decode_bitmap(bitmap);
+    unsafe { GdipDisposeImage(bitmap) };
+    result
+}
+
+fn decode_bitmap(bitmap: *mut c_void) -> io::Result<DecodedImage> {
+    let mut width = 0;
+    let mut height = 0;
+    gdip_status(
+        unsafe { GdipGetImageWidth(bitmap, &mut width) },
+        "read image width",
+    )?;
+    gdip_status(
+        unsafe { GdipGetImageHeight(bitmap, &mut height) },
+        "read image height",
+    )?;
+    let pixel_count = u64::from(width) * u64::from(height);
+    if width == 0 || height == 0 || pixel_count > MAX_PIXELS {
+        return Err(io::Error::other("image dimensions are not supported"));
+    }
+    let pixel_count = usize::try_from(pixel_count)
+        .map_err(|_| io::Error::other("image dimensions are not supported"))?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(pixel_count)
+        .map_err(|_| io::Error::other("not enough memory to import image"))?;
+    pixels.resize(pixel_count, 0);
+
+    let rect = GDIP_RECT {
+        X: 0,
+        Y: 0,
+        Width: width as i32,
+        Height: height as i32,
+    };
+    let mut data = BITMAP_DATA {
+        Width: width,
+        Height: height,
+        Stride: (width * 4) as i32,
+        PixelFormat: PIXEL_FORMAT_32BPP_ARGB,
+        Scan0: pixels.as_mut_ptr().cast(),
+        Reserved: 0,
+    };
+    gdip_status(
+        unsafe {
+            GdipBitmapLockBits(
+                bitmap,
+                &rect,
+                IMAGE_LOCK_MODE_READ | IMAGE_LOCK_MODE_USER_INPUT_BUFFER,
+                PIXEL_FORMAT_32BPP_ARGB,
+                &mut data,
+            )
+        },
+        "decode image pixels",
+    )?;
+    gdip_status(
+        unsafe { GdipBitmapUnlockBits(bitmap, &mut data) },
+        "unlock image pixels",
+    )?;
+    Ok(DecodedImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn gdip_status(status: i32, operation: &str) -> io::Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "could not {operation} (GDI+ status {status})"
         )))
     }
 }
@@ -499,5 +612,27 @@ mod tests {
             state.events.pop_front(),
             Some(Event::TextInput { character: '😀' })
         );
+    }
+
+    #[test]
+    fn decodes_exported_png_pixels_with_windows() {
+        let path = std::env::temp_dir().join(format!(
+            "opendraw-{}-native-png-decode.png",
+            std::process::id()
+        ));
+        let color = crate::graphics::Color::rgba(10, 20, 30, 40);
+        let mut document =
+            crate::document::Document::new(2, 2, crate::graphics::Color::rgba(0, 0, 0, 0)).unwrap();
+        document
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(0, 0, 0, color);
+        crate::file::export(&document, &path, crate::file::ImageFormat::Png).unwrap();
+
+        let image = decode_image(&path).unwrap();
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(image.pixels[0], color.as_u32());
+        assert_eq!(image.pixels[3], 0);
+        std::fs::remove_file(path).unwrap();
     }
 }

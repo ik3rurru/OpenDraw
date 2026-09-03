@@ -79,6 +79,9 @@ pub const OFN_NOCHANGEDIR: DWORD = 0x0000_0008;
 pub const OFN_PATHMUSTEXIST: DWORD = 0x0000_0800;
 pub const OFN_FILEMUSTEXIST: DWORD = 0x0000_1000;
 pub const OFN_EXPLORER: DWORD = 0x0008_0000;
+pub const IMAGE_LOCK_MODE_READ: UINT = 1;
+pub const IMAGE_LOCK_MODE_USER_INPUT_BUFFER: UINT = 4;
+pub const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200a;
 
 pub type WndProc = Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>;
 
@@ -221,9 +224,57 @@ impl Default for OPENFILENAMEW {
     }
 }
 
+#[repr(C)]
+pub struct GDIPLUS_STARTUP_INPUT {
+    pub GdiplusVersion: UINT,
+    pub DebugEventCallback: *mut c_void,
+    pub SuppressBackgroundThread: BOOL,
+    pub SuppressExternalCodecs: BOOL,
+}
+
+#[repr(C)]
+pub struct GDIP_RECT {
+    pub X: i32,
+    pub Y: i32,
+    pub Width: i32,
+    pub Height: i32,
+}
+
+#[repr(C)]
+pub struct BITMAP_DATA {
+    pub Width: UINT,
+    pub Height: UINT,
+    pub Stride: i32,
+    pub PixelFormat: i32,
+    pub Scan0: *mut c_void,
+    pub Reserved: usize,
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetModuleHandleW(module_name: *const u16) -> HINSTANCE;
+}
+
+#[link(name = "gdiplus")]
+unsafe extern "system" {
+    pub fn GdiplusStartup(
+        token: *mut usize,
+        input: *const GDIPLUS_STARTUP_INPUT,
+        output: *mut c_void,
+    ) -> i32;
+    pub fn GdiplusShutdown(token: usize);
+    pub fn GdipCreateBitmapFromFile(filename: *const u16, bitmap: *mut *mut c_void) -> i32;
+    pub fn GdipGetImageWidth(image: *mut c_void, width: *mut UINT) -> i32;
+    pub fn GdipGetImageHeight(image: *mut c_void, height: *mut UINT) -> i32;
+    pub fn GdipBitmapLockBits(
+        bitmap: *mut c_void,
+        rect: *const GDIP_RECT,
+        flags: UINT,
+        format: i32,
+        locked: *mut BITMAP_DATA,
+    ) -> i32;
+    pub fn GdipBitmapUnlockBits(bitmap: *mut c_void, locked: *mut BITMAP_DATA) -> i32;
+    pub fn GdipDisposeImage(image: *mut c_void) -> i32;
 }
 
 #[link(name = "comdlg32")]

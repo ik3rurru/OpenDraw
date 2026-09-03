@@ -152,6 +152,59 @@ impl Document {
         Ok(())
     }
 
+    pub fn import_layer(
+        &mut self,
+        name: String,
+        width: u32,
+        height: u32,
+        pixels: Vec<u32>,
+    ) -> Result<(), DocumentError> {
+        let imported_pixels = u64::from(width) * u64::from(height);
+        if width == 0 || height == 0 || usize::try_from(imported_pixels).ok() != Some(pixels.len())
+        {
+            return Err(DocumentError::InvalidDimensions);
+        }
+        let new_width = self.width.max(width);
+        let new_height = self.height.max(height);
+        let pixels_per_layer = u64::from(new_width) * u64::from(new_height);
+        if self.layers.len() >= MAX_LAYERS
+            || pixels_per_layer
+                .checked_mul(self.layers.len() as u64 + 1)
+                .is_none_or(|total| total > MAX_PIXELS)
+        {
+            return Err(DocumentError::TooLarge);
+        }
+
+        let imported = PixelBuffer {
+            width,
+            height,
+            pixels,
+        };
+        let mut layers = Vec::new();
+        layers
+            .try_reserve_exact(self.layers.len() + 1)
+            .map_err(|_| DocumentError::AllocationFailed)?;
+        for layer in &self.layers {
+            layers.push(Layer {
+                name: layer.name.clone(),
+                visible: layer.visible,
+                opacity: layer.opacity,
+                pixels: layer.pixels.centered_in(new_width, new_height)?,
+            });
+        }
+        layers.push(Layer {
+            name,
+            visible: true,
+            opacity: 255,
+            pixels: imported.centered_in(new_width, new_height)?,
+        });
+        self.width = new_width;
+        self.height = new_height;
+        self.active_layer = layers.len() - 1;
+        self.layers = layers;
+        Ok(())
+    }
+
     pub fn remove_active_layer(&mut self) -> bool {
         if self.layers.len() == 1 {
             return false;
@@ -205,6 +258,19 @@ impl PixelBuffer {
             return None;
         }
         Some(Color::from_u32(self.pixels[(y * self.width + x) as usize]))
+    }
+
+    fn centered_in(&self, width: u32, height: u32) -> Result<Self, DocumentError> {
+        let mut result = Self::new(width, height, Color::rgba(0, 0, 0, 0))?;
+        let offset_x = (width - self.width) / 2;
+        let offset_y = (height - self.height) / 2;
+        for y in 0..self.height {
+            let source = (y * self.width) as usize;
+            let destination = ((y + offset_y) * width + offset_x) as usize;
+            result.pixels[destination..destination + self.width as usize]
+                .copy_from_slice(&self.pixels[source..source + self.width as usize]);
+        }
+        Ok(result)
     }
 
     pub(crate) fn flood_fill(&mut self, x: u32, y: u32, color: Color) {
@@ -359,5 +425,30 @@ mod tests {
         assert_eq!(pixels.get_pixel(4, 2), Some(white));
         pixels.flood_fill(99, 99, black);
         assert_eq!(pixels.get_pixel(4, 2), Some(white));
+    }
+
+    #[test]
+    fn imported_layers_expand_and_center_the_canvas_without_cropping() {
+        let white = Color::rgb(255, 255, 255);
+        let red = Color::rgba(230, 40, 80, 128);
+        let mut document = Document::new(2, 4, white).unwrap();
+
+        document
+            .import_layer(String::from("LOGO"), 4, 2, vec![red.as_u32(); 8])
+            .unwrap();
+
+        assert_eq!((document.width, document.height), (4, 4));
+        assert_eq!(document.active_layer, 1);
+        assert_eq!(document.active_layer().name, "LOGO");
+        assert_eq!(document.layers[0].pixels.get_pixel(1, 0), Some(white));
+        assert_eq!(
+            document.layers[0].pixels.get_pixel(0, 0),
+            Some(Color::rgba(0, 0, 0, 0))
+        );
+        assert_eq!(document.active_layer().pixels.get_pixel(0, 1), Some(red));
+        assert_eq!(
+            document.active_layer().pixels.get_pixel(0, 0),
+            Some(Color::rgba(0, 0, 0, 0))
+        );
     }
 }
