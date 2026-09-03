@@ -31,7 +31,6 @@ const SELECT_BUCKET_BUTTON: u32 = 25;
 const RED_SLIDER: u32 = 26;
 const GREEN_SLIDER: u32 = 27;
 const BLUE_SLIDER: u32 = 28;
-const ALPHA_SLIDER: u32 = 29;
 const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
 const COLOR_SQUARE: u32 = 33;
@@ -351,7 +350,6 @@ impl App {
         {
             self.redo();
         }
-        self.render_color_picker(framebuffer);
         self.ui.label(framebuffer, 20, 82, "TOOLS");
         if self.ui.button(
             framebuffer,
@@ -445,10 +443,7 @@ impl App {
             ActiveTool::Bucket => self.ui.label(framebuffer, 20, 218, "ACTIVE"),
             _ => {}
         }
-        let alpha_y = match self.active_tool {
-            ActiveTool::Brush | ActiveTool::Eraser => 346,
-            ActiveTool::Eyedropper | ActiveTool::Bucket => 264,
-        };
+        let alpha_y = 346;
 
         self.ui.label(
             framebuffer,
@@ -480,9 +475,7 @@ impl App {
                 self.rerender = true;
             }
         }
-
-        self.ui.label(framebuffer, 20, 500, "PAN");
-        self.ui.label(framebuffer, 20, 524, "MIDDLE");
+        self.render_color_picker(framebuffer);
         self.ui
             .label(framebuffer, window_width - 160, 82, "DOCUMENT");
         self.ui.label(
@@ -661,8 +654,7 @@ impl App {
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
-        let x = 120;
-        self.ui.label(framebuffer, x + 20, 82, "COLOR");
+        self.ui.label(framebuffer, 20, 402, "COLOR");
 
         let (_, saturation, value) = self.brush.settings.color.to_hsv();
         let mut saturation = u32::from(saturation);
@@ -671,18 +663,18 @@ impl App {
         let color_changed = self.ui.color_square(
             framebuffer,
             COLOR_SQUARE,
-            Rect::new(x + 8, 108, 104, 104),
+            Rect::new(8, 424, 104, 104),
             hue,
             &mut saturation,
             &mut value,
         );
-        self.ui.label(framebuffer, x + 20, 220, &format!("H {hue}"));
+        self.ui.label(framebuffer, 20, 536, &format!("H {hue}"));
         let hue_changed = self
             .ui
             .hue_slider(
                 framebuffer,
                 HUE_SLIDER,
-                Rect::new(x + 8, 240, 104, 20),
+                Rect::new(8, 556, 104, 20),
                 &mut hue,
             )
             .changed;
@@ -695,72 +687,57 @@ impl App {
         let mut red = u32::from(self.brush.settings.color.red());
         let mut green = u32::from(self.brush.settings.color.green());
         let mut blue = u32::from(self.brush.settings.color.blue());
-        let mut alpha = u32::from(self.brush.settings.opacity);
-        let preview = Rect::new(x + 20, 270, 80, 32);
+        let alpha = self.brush.settings.opacity;
+        let preview = Rect::new(140, 402, 80, 32);
         framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
-        framebuffer.fill_rect(Rect::new(x + 60, 270, 40, 16), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(Rect::new(x + 20, 286, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(180, 402, 40, 16), Color::rgb(176, 176, 176));
+        framebuffer.fill_rect(Rect::new(140, 418, 40, 16), Color::rgb(176, 176, 176));
         framebuffer.fill_rect(
             preview,
-            Color::rgba(red as u8, green as u8, blue as u8, alpha as u8),
+            Color::rgba(red as u8, green as u8, blue as u8, alpha),
         );
         framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
         self.ui.label(
             framebuffer,
-            x + 20,
-            310,
+            140,
+            442,
             &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
         );
 
-        self.ui.label(framebuffer, x + 20, 338, &format!("R {red}"));
+        self.ui.label(framebuffer, 140, 470, &format!("R {red}"));
         let mut changed = self
             .ui
             .slider(
                 framebuffer,
                 RED_SLIDER,
-                Rect::new(x + 8, 358, 104, 20),
+                Rect::new(128, 490, 104, 18),
                 &mut red,
                 255,
                 Color::rgb(210, 60, 60),
             )
             .changed;
-        self.ui
-            .label(framebuffer, x + 20, 388, &format!("G {green}"));
+        self.ui.label(framebuffer, 140, 516, &format!("G {green}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 GREEN_SLIDER,
-                Rect::new(x + 8, 408, 104, 20),
+                Rect::new(128, 536, 104, 18),
                 &mut green,
                 255,
                 Color::rgb(55, 170, 90),
             )
             .changed;
-        self.ui
-            .label(framebuffer, x + 20, 438, &format!("B {blue}"));
+        self.ui.label(framebuffer, 140, 562, &format!("B {blue}"));
         changed |= self
             .ui
             .slider(
                 framebuffer,
                 BLUE_SLIDER,
-                Rect::new(x + 8, 458, 104, 20),
+                Rect::new(128, 582, 104, 18),
                 &mut blue,
                 255,
                 Color::rgb(60, 120, 220),
-            )
-            .changed;
-        self.ui
-            .label(framebuffer, x + 20, 488, &format!("A {alpha}"));
-        changed |= self
-            .ui
-            .slider(
-                framebuffer,
-                ALPHA_SLIDER,
-                Rect::new(x + 8, 508, 104, 20),
-                &mut alpha,
-                255,
-                Color::rgb(225, 228, 232),
             )
             .changed;
         if changed {
@@ -770,7 +747,6 @@ impl App {
                 self.picker_hue = hue;
             }
             self.brush.settings.color = color;
-            self.brush.settings.opacity = alpha as u8;
             self.rerender = true;
         }
     }
@@ -1200,7 +1176,7 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         framebuffer.resize(1000, 700);
 
-        app.handle_event(Event::MouseMove { x: 231, y: 108 });
+        app.handle_event(Event::MouseMove { x: 111, y: 424 });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
