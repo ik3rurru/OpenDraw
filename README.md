@@ -1,42 +1,43 @@
 # OpenDraw
 
-Editor de dibujo raster educativo escrito en Rust, sin dependencias externas.
+Un editor de dibujo raster para Windows, hecho desde cero en Rust y sin dependencias externas.
 
-Estado actual: documentos raster con capas, herramientas de pintura, selector visual de color, historial, archivos `.odraw`, importación PNG, exportación PNG/BMP, zoom y desplazamiento en Windows.
+![OpenDraw editando una ilustración](assets/opendraw-editor.png)
+
+## Características
+
+- Pincel, borrador, cuentagotas y relleno, con control de grosor y opacidad.
+- Capas reordenables con nombre, visibilidad, opacidad y miniaturas.
+- Selector de color HSL, RGB y hexadecimal.
+- Historial de deshacer y rehacer para pintura y capas.
+- Documentos `.odraw`, importación PNG y exportación PNG/BMP.
+- Zoom con la rueda y desplazamiento del lienzo con el botón central.
 
 ## Ejecutar
 
-En Windows, con Rust instalado:
+Necesitas Windows y una instalación reciente de Rust:
 
 ```powershell
 cargo run
 ```
 
-El programa permite elegir dimensiones y fondo blanco o transparente antes de entrar
-en el editor. Todo se dibuja directamente en búferes `Vec<u32>`.
+Al crear un documento puedes elegir sus dimensiones y un fondo blanco o transparente.
 
-Haz clic en el campo para escribir; `Tab` cambia el foco y `Enter` o espacio activa el botón.
-En el lienzo, dibuja con el botón izquierdo, usa la rueda para el zoom y desplaza
-la vista con el botón central.
+## Atajos
 
-El panel izquierdo permite elegir pincel, borrador, cuentagotas o relleno. Pincel
-y borrador ofrecen sliders de grosor y opacidad, con una vista previa a escala. El
-cuentagotas toma el color compuesto de las capas visibles; el relleno reemplaza una
-región de color continuo en la capa activa. Debajo de la opacidad, el selector de
-tono, saturación y luminosidad permanece visible y aplica cada cambio al instante,
-junto a los sliders RGB y la representación hexadecimal.
+| Acción | Atajo |
+| --- | --- |
+| Deshacer / rehacer | `Ctrl+Z` / `Ctrl+Y` |
+| Abrir / guardar | `Ctrl+O` / `Ctrl+S` |
+| Importar PNG | `Ctrl+I` |
+| Exportar imagen | `Ctrl+E` |
 
-El panel derecho muestra las capas superpuestas de arriba abajo, con miniaturas del
-contenido. Haz clic en una fila para activarla o en su ojo para mostrarla y ocultarla;
-el campo `NAME` permite renombrarla y la rueda recorre listas largas. También permite
-añadir, eliminar, ordenar y ajustar con un slider la opacidad de la capa activa.
+El formato `.odraw` conserva las dimensiones del documento y todas sus capas, incluyendo nombres, visibilidad, opacidad y píxeles. Al exportar, PNG mantiene la transparencia y BMP aplana la imagen sobre fondo blanco.
 
-`UNDO`/`REDO` o `Ctrl+Z`/`Ctrl+Y` restauran los cambios de pintura y capas.
-Los botones de carpeta y disquete permiten abrir y guardar documentos `.odraw` mediante
-los diálogos nativos de Windows; también pueden usarse `Ctrl+O` y `Ctrl+S`. El formato
-versionado conserva dimensiones, capas, nombres, visibilidad, opacidad y píxeles.
+## Estado
 
-El botón de exportación o `Ctrl+E` guarda la composición visible como PNG o BMP.
-PNG conserva la transparencia; BMP aplana la imagen sobre un fondo blanco.
-El botón de imagen o `Ctrl+I` importa un PNG como capa nueva conservando su transparencia.
-La imagen se centra y el lienzo se amplía automáticamente si fuese necesario.
+OpenDraw está en desarrollo y actualmente funciona en Windows.
+
+## Licencia
+
+[MIT](LICENSE)
