@@ -90,7 +90,7 @@ mod tests {
     fn draws_and_measures_bitmap_text() {
         let white = Color::rgb(255, 255, 255);
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(12, 7);
+        framebuffer.resize(12, 7).unwrap();
         framebuffer.draw_text(0, 0, "A", white, 1);
 
         assert_eq!(FrameBuffer::measure_text("AB", 1), 11);

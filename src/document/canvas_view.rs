@@ -109,7 +109,7 @@ mod tests {
 
         let document = Document::new(2, 2, Color::rgb(255, 255, 255)).unwrap();
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(40, 40);
+        framebuffer.resize(40, 40).unwrap();
         framebuffer.clear(Color::rgb(0, 0, 0));
         view.render(&document, &mut framebuffer, Rect::new(0, 0, 40, 40));
         assert_eq!(
@@ -117,5 +117,38 @@ mod tests {
             Some(Color::rgb(255, 255, 255))
         );
         assert_eq!(framebuffer.get_pixel(0, 0), Some(Color::rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn software_render_output_is_a_stable_reference() {
+        let mut document = Document::new(2, 1, Color::rgba(0, 0, 0, 0)).unwrap();
+        document
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(0, 0, 0, Color::rgba(255, 0, 0, 128));
+        document
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(1, 0, 0, Color::rgb(0, 0, 255));
+        document.add_layer().unwrap();
+        document
+            .active_layer_mut()
+            .pixels
+            .stamp_circle(0, 0, 0, Color::rgba(0, 255, 0, 128));
+
+        let view = CanvasView::default();
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(3, 1).unwrap();
+        framebuffer.clear(Color::rgb(0, 0, 0));
+        view.render(&document, &mut framebuffer, Rect::new(0, 0, 2, 1));
+
+        assert_eq!(
+            framebuffer.pixels,
+            vec![
+                Color::rgb(120, 184, 56).as_u32(),
+                Color::rgb(0, 0, 255).as_u32(),
+                Color::rgb(0, 0, 0).as_u32(),
+            ]
+        );
     }
 }

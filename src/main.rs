@@ -24,66 +24,105 @@ fn run() -> std::io::Result<()> {
             break;
         };
         app.handle_event(event);
-        while let Some(event) = window.poll_event() {
+        while let Some(event) = window.poll_event()? {
             app.handle_event(event);
         }
-        if !app.running() {
-            break;
-        }
         app.render(window.framebuffer());
-        window.present();
-        if let Some(command) = app.take_file_command() {
-            match command {
-                app::FileCommand::Open => {
-                    if let Some(path) = dialog_selection(&mut app, window.open_document_path())
-                        && let Err(error) = app.open_document(&path)
-                    {
-                        eprintln!("OpenDraw: {error}");
-                    }
-                }
-                app::FileCommand::Save => {
-                    let path = app
-                        .document_path()
-                        .map(|path| path.to_path_buf())
-                        .or_else(|| dialog_selection(&mut app, window.save_document_path()));
-                    if let Some(path) = path
-                        && let Err(error) = app.save_document(&path)
-                    {
-                        eprintln!("OpenDraw: {error}");
-                    }
-                }
-                app::FileCommand::Import => {
-                    if let Some(path) = dialog_selection(&mut app, window.import_image_path()) {
-                        match platform::decode_image(&path) {
-                            Ok(image) => {
-                                if let Err(error) = app.import_image(&path, image) {
-                                    eprintln!("OpenDraw: {error}");
-                                }
-                            }
-                            Err(error) => {
-                                eprintln!("OpenDraw: {error}");
-                                app.report_image_import_error();
-                            }
-                        }
-                    }
-                }
-                app::FileCommand::Export => {
-                    if let Some((mut path, filter)) =
-                        dialog_selection(&mut app, window.export_image_path())
-                    {
-                        let format = export_format(&mut path, filter);
-                        if let Err(error) = app.export_document(&path, format) {
-                            eprintln!("OpenDraw: {error}");
-                        }
-                    }
-                }
+        window.present()?;
+        if let Some(command) = app.take_command() {
+            handle_command(&mut app, &mut window, command);
+            if app.running() {
+                app.render(window.framebuffer());
+                window.present()?;
             }
-            app.render(window.framebuffer());
-            window.present();
         }
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn handle_command(app: &mut app::App, window: &mut platform::Window, command: app::Command) {
+    if matches!(
+        command,
+        app::Command::New | app::Command::Open | app::Command::Exit
+    ) && !allow_destructive_action(app, window)
+    {
+        return;
+    }
+
+    match command {
+        app::Command::New => app.start_new_document(),
+        app::Command::Open => {
+            if let Some(path) = dialog_selection(app, window.open_document_path())
+                && let Err(error) = app.open_document(&path)
+            {
+                eprintln!("OpenDraw: {error}");
+            }
+        }
+        app::Command::Save => {
+            save_current_document(app, window);
+        }
+        app::Command::Import => {
+            if let Some(path) = dialog_selection(app, window.import_image_path()) {
+                match platform::decode_image(&path) {
+                    Ok(image) => {
+                        if let Err(error) = app.import_image(&path, image) {
+                            eprintln!("OpenDraw: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("OpenDraw: {error}");
+                        app.report_image_import_error();
+                    }
+                }
+            }
+        }
+        app::Command::Export => {
+            if let Some((mut path, filter)) = dialog_selection(app, window.export_image_path()) {
+                let format = export_format(&mut path, filter);
+                if let Err(error) = app.export_document(&path, format) {
+                    eprintln!("OpenDraw: {error}");
+                }
+            }
+        }
+        app::Command::Exit => app.exit(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn allow_destructive_action(app: &mut app::App, window: &mut platform::Window) -> bool {
+    if !app.has_unsaved_changes() {
+        return true;
+    }
+    match window.confirm_save_changes() {
+        Ok(platform::SaveChanges::Save) => save_current_document(app, window),
+        Ok(platform::SaveChanges::Discard) => true,
+        Ok(platform::SaveChanges::Cancel) => false,
+        Err(error) => {
+            eprintln!("OpenDraw: {error}");
+            app.report_file_dialog_error();
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn save_current_document(app: &mut app::App, window: &platform::Window) -> bool {
+    let path = app
+        .document_path()
+        .map(|path| path.to_path_buf())
+        .or_else(|| dialog_selection(app, window.save_document_path()));
+    let Some(path) = path else {
+        return false;
+    };
+    match app.save_document(&path) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("OpenDraw: {error}");
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

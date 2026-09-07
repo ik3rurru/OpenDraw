@@ -6,10 +6,11 @@ mod bmp;
 mod png;
 
 use std::{
+    ffi::OsString,
     fmt,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use crate::document::{Document, Layer, MAX_LAYERS, MAX_PIXELS, PixelBuffer};
@@ -69,12 +70,7 @@ impl From<io::Error> for OdrawError {
 
 pub fn save(document: &Document, path: &Path) -> Result<(), OdrawError> {
     validate_document(document)?;
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    write_document(document, &mut writer)?;
-    writer.flush()?;
-    writer.get_ref().sync_all()?;
-    Ok(())
+    write_atomically(path, |writer| write_document(document, writer))
 }
 
 pub fn load(path: &Path) -> Result<Document, OdrawError> {
@@ -82,14 +78,56 @@ pub fn load(path: &Path) -> Result<Document, OdrawError> {
 }
 
 pub fn export(document: &Document, path: &Path, format: ImageFormat) -> io::Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    match format {
-        ImageFormat::Bmp => bmp::write(document, &mut writer)?,
-        ImageFormat::Png => png::write(document, &mut writer)?,
+    write_atomically(path, |writer| match format {
+        ImageFormat::Bmp => bmp::write(document, writer),
+        ImageFormat::Png => png::write(document, writer),
+    })
+}
+
+fn write_atomically<E>(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<io::Error>,
+{
+    let (temporary_path, file) = temporary_file(path).map_err(E::from)?;
+    let result = (|| {
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush().map_err(E::from)?;
+        writer.get_ref().sync_all().map_err(E::from)?;
+        drop(writer);
+        crate::platform::replace_file(&temporary_path, path).map_err(E::from)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary_path);
     }
-    writer.flush()?;
-    writer.get_ref().sync_all()
+    result
+}
+
+fn temporary_file(path: &Path) -> io::Result<(PathBuf, File)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    for attempt in 0..100 {
+        let mut temporary_name = OsString::from(name);
+        temporary_name.push(format!(".opendraw-{}-{attempt}.tmp", std::process::id()));
+        let temporary_path = path.with_file_name(temporary_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+        {
+            Ok(file) => return Ok((temporary_path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create a temporary file",
+    ))
 }
 
 fn write_document(document: &Document, writer: &mut impl Write) -> Result<(), OdrawError> {
@@ -261,7 +299,7 @@ fn read_exact(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), OdrawError
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
 
     use crate::graphics::Color;
 
@@ -310,5 +348,25 @@ mod tests {
             read_document(&mut Cursor::new(&bytes[..10])),
             Err(OdrawError::UnexpectedEndOfFile)
         ));
+    }
+
+    #[test]
+    fn atomic_write_preserves_the_previous_file_on_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "opendraw-{}-atomic-write.odraw",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"original").unwrap();
+
+        write_atomically(&path, |writer| writer.write_all(b"replacement")).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+
+        let result: io::Result<()> = write_atomically(&path, |writer| {
+            writer.write_all(b"partial")?;
+            Err(io::Error::other("simulated write failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_file(path).unwrap();
     }
 }

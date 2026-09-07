@@ -1,3 +1,5 @@
+/// Straight-alpha color stored as `0xAARRGGBB`.
+/// On the little-endian targets OpenDraw supports, its in-memory bytes are BGRA.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(u32);
 
@@ -118,6 +120,14 @@ mod tests {
 
         let red = Color::rgba(255, 0, 0, 128).blend_over(Color::rgba(0, 0, 0, 0));
         assert_eq!(red, Color::rgba(255, 0, 0, 128));
+    }
+
+    #[test]
+    fn memory_layout_is_bgra_for_native_and_gpu_presentation() {
+        assert_eq!(
+            Color::rgba(0x11, 0x22, 0x33, 0x44).as_u32().to_ne_bytes(),
+            [0x33, 0x22, 0x11, 0x44]
+        );
     }
 
     #[test]

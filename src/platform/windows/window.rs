@@ -11,7 +11,7 @@ use std::{
 use crate::{
     document::MAX_PIXELS,
     graphics::FrameBuffer,
-    platform::{DecodedImage, Event, Key, MouseButton},
+    platform::{DecodedImage, Event, Key, MouseButton, SaveChanges},
 };
 
 use super::ffi::*;
@@ -21,6 +21,7 @@ struct WindowState {
     framebuffer: FrameBuffer,
     events: VecDeque<Event>,
     pending_high_surrogate: Option<u16>,
+    error: Option<io::Error>,
     destroyed: bool,
 }
 
@@ -99,12 +100,19 @@ impl Window {
             ShowWindow(handle, SW_SHOW);
             UpdateWindow(handle);
 
+            if let Some(error) = state.error.take() {
+                return Err(error);
+            }
+
             Ok(Self { handle, state })
         }
     }
 
     pub fn next_event(&mut self) -> io::Result<Option<Event>> {
         loop {
+            if let Some(error) = self.state.error.take() {
+                return Err(error);
+            }
             if let Some(event) = self.state.events.pop_front() {
                 return Ok(Some(event));
             }
@@ -126,18 +134,21 @@ impl Window {
         &mut self.state.framebuffer
     }
 
-    pub fn poll_event(&mut self) -> Option<Event> {
+    pub fn poll_event(&mut self) -> io::Result<Option<Event>> {
         loop {
+            if let Some(error) = self.state.error.take() {
+                return Err(error);
+            }
             if let Some(event) = self.state.events.pop_front() {
-                return Some(event);
+                return Ok(Some(event));
             }
 
             let mut message = MSG::default();
             if unsafe { PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) } == 0 {
-                return None;
+                return Ok(None);
             }
             if message.message == WM_QUIT {
-                return Some(Event::CloseRequested);
+                return Ok(Some(Event::CloseRequested));
             }
             unsafe {
                 TranslateMessage(&message);
@@ -146,10 +157,32 @@ impl Window {
         }
     }
 
-    pub fn present(&self) {
+    pub fn present(&mut self) -> io::Result<()> {
         unsafe {
-            InvalidateRect(self.handle, ptr::null(), 0);
+            if InvalidateRect(self.handle, ptr::null(), 0) == 0 {
+                return Err(io::Error::last_os_error());
+            }
             UpdateWindow(self.handle);
+        }
+        self.state.error.take().map_or(Ok(()), Err)
+    }
+
+    pub fn confirm_save_changes(&self) -> io::Result<SaveChanges> {
+        let message = wide("Save changes before continuing?");
+        let title = wide("OpenDraw");
+        let result = unsafe {
+            MessageBoxW(
+                self.handle,
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_YESNOCANCEL | MB_ICONWARNING,
+            )
+        };
+        match result {
+            IDYES => Ok(SaveChanges::Save),
+            IDNO => Ok(SaveChanges::Discard),
+            IDCANCEL => Ok(SaveChanges::Cancel),
+            _ => Err(io::Error::last_os_error()),
         }
     }
 
@@ -261,6 +294,27 @@ impl Window {
             PathBuf::from(OsString::from_wide(&path[..length])),
             dialog.nFilterIndex,
         )))
+    }
+}
+
+pub fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -401,8 +455,10 @@ unsafe extern "system" fn window_proc(
                 let width = (rect.right - rect.left).max(0) as u32;
                 let height = (rect.bottom - rect.top).max(0) as u32;
                 let state = unsafe { &mut *state };
-                state.framebuffer.resize(width, height);
-                state.events.push_back(Event::Resized { width, height });
+                match state.framebuffer.resize(width, height) {
+                    Ok(()) => state.events.push_back(Event::Resized { width, height }),
+                    Err(error) => state.error = Some(io::Error::other(error)),
+                }
             }
             0
         }
@@ -465,10 +521,14 @@ unsafe extern "system" fn window_proc(
         WM_PAINT if !state.is_null() => {
             let mut paint = PAINTSTRUCT::default();
             let dc = unsafe { BeginPaint(window, &mut paint) };
-            if !dc.is_null() {
-                unsafe { present(dc, &(*state).framebuffer) };
+            if dc.is_null() {
+                unsafe { &mut *state }.error = Some(io::Error::last_os_error());
+            } else if let Err(error) = unsafe { present_framebuffer(dc, &(*state).framebuffer) } {
+                unsafe { &mut *state }.error = Some(error);
             }
-            unsafe { EndPaint(window, &paint) };
+            if unsafe { EndPaint(window, &paint) } == 0 {
+                unsafe { &mut *state }.error = Some(io::Error::last_os_error());
+            }
             0
         }
         WM_ERASEBKGND => 1,
@@ -538,9 +598,9 @@ fn key_from_virtual(key: u32) -> Key {
     }
 }
 
-unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
+unsafe fn present_framebuffer(dc: HDC, framebuffer: &FrameBuffer) -> io::Result<()> {
     if framebuffer.width == 0 || framebuffer.height == 0 {
-        return;
+        return Ok(());
     }
 
     let width = framebuffer.width as i32;
@@ -570,7 +630,7 @@ unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
 
     // SAFETY: pixels contains width*height contiguous u32 values and remains borrowed
     // for the synchronous StretchDIBits call. BITMAPINFO describes the same dimensions.
-    unsafe {
+    let lines = unsafe {
         StretchDIBits(
             dc,
             0,
@@ -585,7 +645,12 @@ unsafe fn present(dc: HDC, framebuffer: &FrameBuffer) {
             &info,
             DIB_RGB_COLORS,
             SRCCOPY,
-        );
+        )
+    };
+    if lines == 0 || lines == GDI_ERROR {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 

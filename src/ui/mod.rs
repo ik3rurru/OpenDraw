@@ -462,7 +462,7 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         let mut value = String::new();
         let rect = Rect::new(10, 10, 160, 32);
-        framebuffer.resize(200, 60);
+        framebuffer.resize(200, 60).unwrap();
 
         ui.handle_event(&Event::MouseMove { x: 20, y: 20 });
         ui.handle_event(&Event::MouseDown {
@@ -489,7 +489,7 @@ mod tests {
         let mut framebuffer = FrameBuffer::default();
         let mut value = 0;
         let rect = Rect::new(10, 10, 101, 20);
-        framebuffer.resize(130, 40);
+        framebuffer.resize(130, 40).unwrap();
 
         ui.handle_event(&Event::MouseMove { x: 110, y: 20 });
         ui.handle_event(&Event::MouseDown {
@@ -543,7 +543,7 @@ mod tests {
         let rect = Rect::new(10, 10, 101, 101);
         let mut saturation = 0;
         let mut value = 0;
-        framebuffer.resize(130, 130);
+        framebuffer.resize(130, 130).unwrap();
 
         ui.handle_event(&Event::MouseMove { x: 110, y: 10 });
         ui.handle_event(&Event::MouseDown {

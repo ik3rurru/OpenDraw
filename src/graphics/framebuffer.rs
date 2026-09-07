@@ -1,4 +1,23 @@
+use std::fmt;
+
 use super::{Color, Rect, rasterize_line};
+
+#[derive(Debug)]
+pub enum FrameBufferError {
+    TooLarge,
+    AllocationFailed,
+}
+
+impl fmt::Display for FrameBufferError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge => formatter.write_str("framebuffer dimensions are too large"),
+            Self::AllocationFailed => formatter.write_str("could not allocate framebuffer pixels"),
+        }
+    }
+}
+
+impl std::error::Error for FrameBufferError {}
 
 #[derive(Default)]
 pub struct FrameBuffer {
@@ -8,11 +27,17 @@ pub struct FrameBuffer {
 }
 
 impl FrameBuffer {
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), FrameBufferError> {
+        let pixel_count = u64::from(width) * u64::from(height);
+        let pixel_count = usize::try_from(pixel_count).map_err(|_| FrameBufferError::TooLarge)?;
+        self.pixels
+            .try_reserve_exact(pixel_count.saturating_sub(self.pixels.len()))
+            .map_err(|_| FrameBufferError::AllocationFailed)?;
         self.width = width;
         self.height = height;
-        self.pixels.resize(width as usize * height as usize, 0);
+        self.pixels.resize(pixel_count, 0);
         self.clear(Color::rgba(0, 0, 0, 0));
+        Ok(())
     }
 
     pub fn clear(&mut self, color: Color) {
@@ -187,7 +212,7 @@ mod tests {
         let light = Color::rgb(255, 255, 255);
         let dark = Color::rgb(0, 0, 0);
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(4, 4);
+        framebuffer.resize(4, 4).unwrap();
         framebuffer.checkerboard(2, light, dark);
 
         assert_eq!(
@@ -205,7 +230,7 @@ mod tests {
         let white = Color::rgb(255, 255, 255);
         let black = Color::rgb(0, 0, 0);
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(5, 5);
+        framebuffer.resize(5, 5).unwrap();
         framebuffer.clear(black);
 
         framebuffer.draw_line(-2, -2, 2, 2, white);
@@ -216,5 +241,16 @@ mod tests {
         assert_eq!(framebuffer.get_pixel(4, 3), Some(white));
         assert_eq!(framebuffer.get_pixel(2, 2), Some(Color::rgb(255, 127, 127)));
         assert_eq!(framebuffer.get_pixel(-1, 0), None);
+    }
+
+    #[test]
+    fn failed_resize_preserves_the_existing_framebuffer() {
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(2, 2).unwrap();
+        framebuffer.clear(Color::rgb(10, 20, 30));
+
+        assert!(framebuffer.resize(u32::MAX, u32::MAX).is_err());
+        assert_eq!((framebuffer.width, framebuffer.height), (2, 2));
+        assert_eq!(framebuffer.get_pixel(1, 1), Some(Color::rgb(10, 20, 30)));
     }
 }

@@ -83,11 +83,18 @@ enum EditorIcon {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileCommand {
+pub enum Command {
+    New,
     Open,
     Save,
     Import,
     Export,
+    Exit,
+}
+
+struct Snapshot {
+    document: Document,
+    revision: u64,
 }
 
 pub struct App {
@@ -108,12 +115,15 @@ pub struct App {
     active_tool: ActiveTool,
     picker_hue: u32,
     control_down: bool,
-    undo_history: Vec<Document>,
-    redo_history: Vec<Document>,
+    undo_history: Vec<Snapshot>,
+    redo_history: Vec<Snapshot>,
+    current_revision: u64,
+    saved_revision: Option<u64>,
+    next_revision: u64,
     layer_scroll: usize,
     layer_name_edit_recorded: Option<usize>,
     layer_opacity_drag_recorded: bool,
-    pending_file_command: Option<FileCommand>,
+    pending_command: Option<Command>,
     document_path: Option<PathBuf>,
     editor_notice: Option<&'static str>,
     rerender: bool,
@@ -141,10 +151,13 @@ impl App {
             control_down: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
+            current_revision: 0,
+            saved_revision: None,
+            next_revision: 1,
             layer_scroll: 0,
             layer_name_edit_recorded: None,
             layer_opacity_drag_recorded: false,
-            pending_file_command: None,
+            pending_command: None,
             document_path: None,
             editor_notice: None,
             rerender: false,
@@ -155,12 +168,38 @@ impl App {
         self.running
     }
 
-    pub fn take_file_command(&mut self) -> Option<FileCommand> {
-        let command = self.pending_file_command.take();
+    pub fn take_command(&mut self) -> Option<Command> {
+        let command = self.pending_command.take();
         if command.is_some() {
             self.ui.release_pointer();
         }
         command
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.document.is_some() && self.saved_revision != Some(self.current_revision)
+    }
+
+    pub fn start_new_document(&mut self) {
+        self.end_tool();
+        self.state = AppState::NewDocument;
+        self.document = None;
+        self.document_path = None;
+        self.current_revision = 0;
+        self.saved_revision = None;
+        self.panning = false;
+        self.undo_history.clear();
+        self.redo_history.clear();
+        self.layer_scroll = 0;
+        self.layer_name_edit_recorded = None;
+        self.layer_opacity_drag_recorded = false;
+        self.editor_notice = None;
+        self.ui.clear_focus();
+        self.rerender = true;
+    }
+
+    pub fn exit(&mut self) {
+        self.running = false;
     }
 
     pub fn document_path(&self) -> Option<&Path> {
@@ -168,6 +207,9 @@ impl App {
     }
 
     pub fn save_document(&mut self, path: &Path) -> Result<(), OdrawError> {
+        self.end_tool();
+        self.layer_name_edit_recorded = None;
+        self.layer_opacity_drag_recorded = false;
         let result = file::save(self.document.as_ref().unwrap(), path);
         self.editor_notice = Some(match &result {
             Ok(()) => "DOCUMENT SAVED",
@@ -175,6 +217,7 @@ impl App {
         });
         if result.is_ok() {
             self.document_path = Some(path.to_path_buf());
+            self.saved_revision = Some(self.current_revision);
         }
         self.rerender = true;
         result
@@ -198,6 +241,8 @@ impl App {
         self.panning = false;
         self.undo_history.clear();
         self.redo_history.clear();
+        self.advance_revision();
+        self.saved_revision = Some(self.current_revision);
         self.layer_scroll = 0;
         self.layer_name_edit_recorded = None;
         self.layer_opacity_drag_recorded = false;
@@ -262,7 +307,7 @@ impl App {
     pub fn handle_event(&mut self, event: Event) {
         self.ui.handle_event(&event);
         match event {
-            Event::CloseRequested => self.running = false,
+            Event::CloseRequested => self.pending_command = Some(Command::Exit),
             Event::Resized { width, height } => self.window_size = (width, height),
             Event::MouseMove { x, y } => {
                 if self.panning {
@@ -338,21 +383,21 @@ impl App {
             } if self.control_down && self.state == AppState::Editor => self.redo(),
             Event::KeyDown {
                 key: Key::Letter('O'),
-            } if self.control_down => self.pending_file_command = Some(FileCommand::Open),
+            } if self.control_down => self.pending_command = Some(Command::Open),
             Event::KeyDown {
                 key: Key::Letter('S'),
             } if self.control_down && self.state == AppState::Editor => {
-                self.pending_file_command = Some(FileCommand::Save)
+                self.pending_command = Some(Command::Save)
             }
             Event::KeyDown {
                 key: Key::Letter('E'),
             } if self.control_down && self.state == AppState::Editor => {
-                self.pending_file_command = Some(FileCommand::Export)
+                self.pending_command = Some(Command::Export)
             }
             Event::KeyDown {
                 key: Key::Letter('I'),
             } if self.control_down && self.state == AppState::Editor => {
-                self.pending_file_command = Some(FileCommand::Import)
+                self.pending_command = Some(Command::Import)
             }
             _ => {}
         }
@@ -454,7 +499,7 @@ impl App {
             Rect::new(panel.x + 28, panel.y + 356, 144, 48),
             "OPEN",
         ) {
-            self.pending_file_command = Some(FileCommand::Open);
+            self.pending_command = Some(Command::Open);
         }
         if self.ui.button(
             framebuffer,
@@ -462,7 +507,7 @@ impl App {
             Rect::new(panel.x + 188, panel.y + 356, 150, 48),
             "CANCEL",
         ) {
-            self.running = false;
+            self.pending_command = Some(Command::Exit);
         }
         if self.ui.button(
             framebuffer,
@@ -543,7 +588,7 @@ impl App {
             Rect::new(348, 9, 48, 38),
             EditorIcon::Folder,
         ) {
-            self.pending_file_command = Some(FileCommand::Open);
+            self.pending_command = Some(Command::Open);
         }
         if self.icon_button(
             framebuffer,
@@ -551,7 +596,7 @@ impl App {
             Rect::new(404, 9, 48, 38),
             EditorIcon::Save,
         ) {
-            self.pending_file_command = Some(FileCommand::Save);
+            self.pending_command = Some(Command::Save);
         }
         if self.icon_button(
             framebuffer,
@@ -559,7 +604,7 @@ impl App {
             Rect::new(460, 9, 48, 38),
             EditorIcon::Import,
         ) {
-            self.pending_file_command = Some(FileCommand::Import);
+            self.pending_command = Some(Command::Import);
         }
         if self.icon_button(
             framebuffer,
@@ -567,7 +612,7 @@ impl App {
             Rect::new(516, 9, 48, 38),
             EditorIcon::Export,
         ) {
-            self.pending_file_command = Some(FileCommand::Export);
+            self.pending_command = Some(Command::Export);
         }
         self.ui.label(framebuffer, 20, 66, "TOOLS");
         if self.icon_button(
@@ -863,11 +908,7 @@ impl App {
             Rect::new(window_width - 168, 9, 156, 38),
             "NEW DOC",
         ) {
-            self.state = AppState::NewDocument;
-            self.panning = false;
-            self.end_tool();
-            self.editor_notice = None;
-            self.ui.clear_focus();
+            self.pending_command = Some(Command::New);
         }
     }
 
@@ -1256,14 +1297,21 @@ impl App {
     fn checkpoint(&mut self) {
         let snapshot_bytes = Self::document_bytes(self.document.as_ref().unwrap());
         self.prepare_history(snapshot_bytes);
-        self.undo_history
-            .push(self.document.as_ref().unwrap().clone());
+        self.undo_history.push(Snapshot {
+            document: self.document.as_ref().unwrap().clone(),
+            revision: self.current_revision,
+        });
+        self.advance_revision();
     }
 
     fn remember(&mut self, snapshot: Document) {
         let snapshot_bytes = Self::document_bytes(&snapshot);
         self.prepare_history(snapshot_bytes);
-        self.undo_history.push(snapshot);
+        self.undo_history.push(Snapshot {
+            document: snapshot,
+            revision: self.current_revision,
+        });
+        self.advance_revision();
     }
 
     fn prepare_history(&mut self, snapshot_bytes: u64) {
@@ -1282,10 +1330,14 @@ impl App {
         };
         self.end_tool();
         let dimensions_changed = self.document.as_ref().is_some_and(|current| {
-            (current.width, current.height) != (previous.width, previous.height)
+            (current.width, current.height) != (previous.document.width, previous.document.height)
         });
-        let current = self.document.replace(previous).unwrap();
-        self.redo_history.push(current);
+        let current = self.document.replace(previous.document).unwrap();
+        self.redo_history.push(Snapshot {
+            document: current,
+            revision: self.current_revision,
+        });
+        self.current_revision = previous.revision;
         if dimensions_changed {
             self.canvas_view =
                 CanvasView::fit(self.document.as_ref().unwrap(), self.editor_viewport());
@@ -1301,12 +1353,15 @@ impl App {
             return;
         };
         self.end_tool();
-        let dimensions_changed = self
-            .document
-            .as_ref()
-            .is_some_and(|current| (current.width, current.height) != (next.width, next.height));
-        let current = self.document.replace(next).unwrap();
-        self.undo_history.push(current);
+        let dimensions_changed = self.document.as_ref().is_some_and(|current| {
+            (current.width, current.height) != (next.document.width, next.document.height)
+        });
+        let current = self.document.replace(next.document).unwrap();
+        self.undo_history.push(Snapshot {
+            document: current,
+            revision: self.current_revision,
+        });
+        self.current_revision = next.revision;
         if dimensions_changed {
             self.canvas_view =
                 CanvasView::fit(self.document.as_ref().unwrap(), self.editor_viewport());
@@ -1317,8 +1372,11 @@ impl App {
         self.rerender = true;
     }
 
-    fn history_bytes(history: &[Document]) -> u64 {
-        history.iter().map(Self::document_bytes).sum()
+    fn history_bytes(history: &[Snapshot]) -> u64 {
+        history
+            .iter()
+            .map(|snapshot| Self::document_bytes(&snapshot.document))
+            .sum()
     }
 
     fn document_bytes(document: &Document) -> u64 {
@@ -1370,6 +1428,8 @@ impl App {
         self.canvas_view = CanvasView::fit(&document, self.editor_viewport());
         self.document = Some(document);
         self.document_path = None;
+        self.advance_revision();
+        self.saved_revision = None;
         self.validation_error = None;
         self.state = AppState::Editor;
         self.panning = false;
@@ -1380,6 +1440,14 @@ impl App {
         self.layer_name_edit_recorded = None;
         self.editor_notice = None;
         self.ui.clear_focus();
+    }
+
+    fn advance_revision(&mut self) {
+        self.current_revision = self.next_revision;
+        self.next_revision = self
+            .next_revision
+            .checked_add(1)
+            .expect("document revision counter exhausted");
     }
 
     fn layer_changed(&mut self) {
@@ -1571,6 +1639,7 @@ mod tests {
         app.window_size = (1000, 700);
         app.create_document();
         assert_eq!(app.state, AppState::Editor);
+        assert!(app.has_unsaved_changes());
         let document = app.document.as_ref().unwrap();
         assert_eq!((document.width, document.height), (640, 480));
         assert_eq!(
@@ -1707,7 +1776,7 @@ mod tests {
         app.state = AppState::Editor;
         app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
 
         app.handle_event(Event::MouseMove { x: 900, y: 609 });
         app.handle_event(Event::MouseDown {
@@ -1734,7 +1803,7 @@ mod tests {
         app.state = AppState::Editor;
         app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
 
         app.handle_event(Event::MouseMove { x: 900, y: 555 });
         app.handle_event(Event::MouseDown {
@@ -1776,7 +1845,7 @@ mod tests {
         }
         app.document = Some(document);
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
 
         app.handle_event(Event::MouseMove { x: 900, y: 220 });
         app.handle_event(Event::MouseDown {
@@ -1810,7 +1879,7 @@ mod tests {
         app.active_tool = ActiveTool::Eraser;
         app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
 
         app.handle_event(Event::MouseMove { x: 50, y: 96 });
         app.handle_event(Event::MouseDown {
@@ -1833,7 +1902,7 @@ mod tests {
         app.state = AppState::Editor;
         app.document = Some(Document::new(4, 4, Color::rgb(255, 255, 255)).unwrap());
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
 
         app.handle_event(Event::MouseMove { x: 111, y: 339 });
         app.handle_event(Event::MouseDown {
@@ -1864,21 +1933,49 @@ mod tests {
         app.handle_event(Event::KeyDown {
             key: Key::Letter('S'),
         });
-        assert_eq!(app.take_file_command(), Some(FileCommand::Save));
+        assert_eq!(app.take_command(), Some(Command::Save));
         app.save_document(&path).unwrap();
         assert_eq!(app.document_path(), Some(path.as_path()));
-        app.document.as_mut().unwrap().layers[0].name = String::from("CHANGED");
+        assert!(!app.has_unsaved_changes());
         app.checkpoint();
+        app.document.as_mut().unwrap().layers[0].name = String::from("CHANGED");
+        assert!(app.has_unsaved_changes());
+        app.undo();
+        assert!(!app.has_unsaved_changes());
+        app.redo();
+        assert!(app.has_unsaved_changes());
         app.open_document(&path).unwrap();
         assert_eq!(app.document.as_ref().unwrap().layers[0].name, "SAVED");
         assert_eq!(app.document.as_ref().unwrap().layers[1].opacity, 91);
         assert!(app.undo_history.is_empty());
+        assert!(!app.has_unsaved_changes());
 
+        app.checkpoint();
         app.document.as_mut().unwrap().layers[0].name = String::from("CURRENT");
         std::fs::write(&path, b"invalid").unwrap();
         assert!(app.open_document(&path).is_err());
         assert_eq!(app.document.as_ref().unwrap().layers[0].name, "CURRENT");
+        assert!(app.has_unsaved_changes());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn close_request_waits_for_the_unsaved_changes_decision() {
+        let mut app = App::new();
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(2, 2, Color::rgb(255, 255, 255)).unwrap());
+
+        app.handle_event(Event::CloseRequested);
+
+        assert!(app.running());
+        assert!(app.has_unsaved_changes());
+        assert_eq!(app.take_command(), Some(Command::Exit));
+        assert!(app.document.is_some());
+
+        app.start_new_document();
+        assert_eq!(app.state, AppState::NewDocument);
+        assert!(!app.has_unsaved_changes());
+        assert!(app.document.is_none());
     }
 
     #[test]
@@ -1894,7 +1991,7 @@ mod tests {
         app.handle_event(Event::KeyDown {
             key: Key::Letter('E'),
         });
-        assert_eq!(app.take_file_command(), Some(FileCommand::Export));
+        assert_eq!(app.take_command(), Some(Command::Export));
         app.export_document(&png_path, ImageFormat::Png).unwrap();
         app.export_document(&bmp_path, ImageFormat::Bmp).unwrap();
         assert_eq!(
@@ -1918,16 +2015,16 @@ mod tests {
         app.handle_event(Event::KeyDown {
             key: Key::Letter('I'),
         });
-        assert_eq!(app.take_file_command(), Some(FileCommand::Import));
+        assert_eq!(app.take_command(), Some(Command::Import));
 
         let mut framebuffer = FrameBuffer::default();
-        framebuffer.resize(1000, 700);
+        framebuffer.resize(1000, 700).unwrap();
         app.handle_event(Event::MouseMove { x: 480, y: 28 });
         app.handle_event(Event::MouseDown {
             button: MouseButton::Left,
         });
         app.render(&mut framebuffer);
-        assert_eq!(app.take_file_command(), Some(FileCommand::Import));
+        assert_eq!(app.take_command(), Some(Command::Import));
         app.import_image(
             Path::new("logo.png"),
             DecodedImage {

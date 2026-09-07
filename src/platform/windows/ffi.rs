@@ -73,6 +73,14 @@ pub const VK_DELETE: u32 = 0x2e;
 pub const BI_RGB: DWORD = 0;
 pub const DIB_RGB_COLORS: UINT = 0;
 pub const SRCCOPY: DWORD = 0x00cc_0020;
+pub const GDI_ERROR: i32 = -1;
+pub const MOVEFILE_REPLACE_EXISTING: DWORD = 0x0000_0001;
+pub const MOVEFILE_WRITE_THROUGH: DWORD = 0x0000_0008;
+pub const MB_YESNOCANCEL: UINT = 0x0000_0003;
+pub const MB_ICONWARNING: UINT = 0x0000_0030;
+pub const IDCANCEL: i32 = 2;
+pub const IDYES: i32 = 6;
+pub const IDNO: i32 = 7;
 pub const OFN_OVERWRITEPROMPT: DWORD = 0x0000_0002;
 pub const OFN_HIDEREADONLY: DWORD = 0x0000_0004;
 pub const OFN_NOCHANGEDIR: DWORD = 0x0000_0008;
@@ -253,6 +261,7 @@ pub struct BITMAP_DATA {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetModuleHandleW(module_name: *const u16) -> HINSTANCE;
+    pub fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: DWORD) -> BOOL;
 }
 
 #[link(name = "gdiplus")]
@@ -316,6 +325,7 @@ unsafe extern "system" {
     pub fn DispatchMessageW(message: *const MSG) -> LRESULT;
     pub fn ShowWindow(window: HWND, command: i32) -> BOOL;
     pub fn UpdateWindow(window: HWND) -> BOOL;
+    pub fn MessageBoxW(window: HWND, text: *const u16, caption: *const u16, kind: UINT) -> i32;
     pub fn LoadCursorW(instance: HINSTANCE, cursor_name: *const u16) -> HCURSOR;
     pub fn GetClientRect(window: HWND, rect: *mut RECT) -> BOOL;
     pub fn SetWindowLongPtrW(window: HWND, index: i32, value: isize) -> isize;
