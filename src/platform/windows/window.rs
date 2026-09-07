@@ -492,16 +492,15 @@ unsafe extern "system" fn window_proc(
         WM_POINTERENTER | WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERLEAVE
             if !state.is_null() =>
         {
-            match pen_event(window, message, wparam) {
-                Some(event) => {
-                    // Consuming pen messages ourselves keeps Windows from also
-                    // promoting them to emulated WM_MOUSE* messages, which would
-                    // draw a second stroke per pen stroke.
-                    unsafe { &mut *state }.events.push_back(event);
-                    0
-                }
-                None => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+            if let Some(event) = pen_event(window, message, wparam) {
+                unsafe { &mut *state }.events.push_back(event);
             }
+            // The editor still runs entirely on mouse input, so pen messages must
+            // reach DefWindowProc to be promoted to the emulated WM_MOUSE* messages
+            // (UI clicks and strokes). Suppress that promotion only when the brush
+            // engine consumes PenSamples directly (PEN-004), or every pen stroke
+            // would draw twice.
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_KEYDOWN if !state.is_null() => {
             unsafe { &mut *state }.events.push_back(Event::KeyDown {
