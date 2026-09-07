@@ -1,9 +1,13 @@
 mod event;
+mod input;
 
 #[cfg(target_os = "windows")]
 mod windows;
 
 pub use event::{Event, Key, MouseButton};
+// Consumed from PEN-002 onward by the platform tablet backends.
+#[allow(unused_imports)]
+pub use input::{PenCapabilities, PenSample, PenTool, PointerType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveChanges {
