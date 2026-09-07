@@ -21,6 +21,9 @@ struct WindowState {
     framebuffer: FrameBuffer,
     events: VecDeque<Event>,
     pending_high_surrogate: Option<u16>,
+    // Reused across WM_POINTERUPDATE batches so coalesced samples never
+    // allocate per message.
+    pen_history: Vec<POINTER_PEN_INFO>,
     error: Option<io::Error>,
     destroyed: bool,
 }
@@ -492,9 +495,7 @@ unsafe extern "system" fn window_proc(
         WM_POINTERENTER | WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERLEAVE
             if !state.is_null() =>
         {
-            if let Some(event) = pen_event(window, message, wparam) {
-                unsafe { &mut *state }.events.push_back(event);
-            }
+            push_pen_events(unsafe { &mut *state }, window, message, wparam);
             // The editor still runs entirely on mouse input, so pen messages must
             // reach DefWindowProc to be promoted to the emulated WM_MOUSE* messages
             // (UI clicks and strokes). Suppress that promotion only when the brush
@@ -583,10 +584,9 @@ fn pointer_id(wparam: WPARAM) -> u32 {
     (wparam & 0xffff) as u32
 }
 
-/// Translates one WM_POINTER* message into a common pen event.
-/// Returns `None` when the pointer is not a stylus (mouse/touch), letting the
-/// default window procedure keep its usual behavior for those devices.
-fn pen_event(window: HWND, message: UINT, wparam: WPARAM) -> Option<Event> {
+/// Translates WM_POINTER* messages into common pen events. Non-pen pointers
+/// (mouse/touch) produce nothing and keep their default behavior.
+fn push_pen_events(state: &mut WindowState, window: HWND, message: UINT, wparam: WPARAM) {
     let pointer_id = pointer_id(wparam);
     // SAFETY: pointer_id comes from the message's wParam; every out-pointer is a
     // valid stack local that outlives each synchronous call, and the calls only
@@ -594,33 +594,101 @@ fn pen_event(window: HWND, message: UINT, wparam: WPARAM) -> Option<Event> {
     unsafe {
         let mut pointer_type = 0;
         if GetPointerType(pointer_id, &mut pointer_type) == 0 || pointer_type != PT_PEN {
-            return None;
+            return;
         }
         if message == WM_POINTERLEAVE {
-            return Some(Event::PenProximityOut {
+            state.events.push_back(Event::PenProximityOut {
                 pointer_id: u64::from(pointer_id),
             });
+            return;
+        }
+
+        let Some(origin) = client_origin(window) else { return };
+
+        if message == WM_POINTERUPDATE {
+            // Pen digitizers sample faster than the message queue delivers, so
+            // Windows coalesces samples into one WM_POINTERUPDATE. The history
+            // call returns every coalesced sample, newest first.
+            let mut capacity = 16_usize;
+            loop {
+                state.pen_history.clear();
+                state
+                    .pen_history
+                    .resize_with(capacity, POINTER_PEN_INFO::default);
+                let mut count = capacity as u32;
+                // SAFETY: pen_history owns `capacity` contiguous zeroed
+                // POINTER_PEN_INFO entries and count is a stack local; both
+                // outlive the synchronous call, which only fills POD data.
+                let retrieved = GetPointerPenInfoHistory(
+                    pointer_id,
+                    &mut count,
+                    state.pen_history.as_mut_ptr(),
+                ) != 0;
+                if count as usize > capacity {
+                    // Buffer too small: Windows reported the total available.
+                    capacity = count as usize;
+                    continue;
+                }
+                if retrieved && count > 0 {
+                    push_coalesced_moves(
+                        &mut state.events,
+                        pointer_id,
+                        origin,
+                        &state.pen_history[..count as usize],
+                    );
+                }
+                return;
+            }
         }
 
         let mut pen_info = POINTER_PEN_INFO::default();
         if GetPointerPenInfo(pointer_id, &mut pen_info) == 0 {
-            return None;
+            return;
         }
-
-        // POINTER_PEN_INFO reports screen coordinates; the brush engine needs
-        // window-relative ones.
-        let mut location = pen_info.pointer_info.pt_pixel_location;
-        if ScreenToClient(window, &mut location) == 0 {
-            return None;
-        }
-
-        let sample = pen_sample_from(pointer_id, &pen_info, location);
-        Some(match message {
+        let sample = pen_sample_from(
+            pointer_id,
+            &pen_info,
+            client_location(pen_info.pointer_info.pt_pixel_location, origin),
+        );
+        state.events.push_back(match message {
             WM_POINTERENTER => Event::PenProximityIn(sample),
             WM_POINTERDOWN => Event::PenDown(sample),
-            WM_POINTERUPDATE => Event::PenMove(sample),
             _ => Event::PenUp(sample),
-        })
+        });
+    }
+}
+
+/// Screen origin of the client area: subtracting it converts screen coordinates
+/// into client coordinates, and it is constant for one message batch.
+fn client_origin(window: HWND) -> Option<POINT> {
+    let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: origin is a valid stack local alive for the synchronous call.
+    (unsafe { ClientToScreen(window, &mut origin) } != 0).then_some(origin)
+}
+
+fn client_location(location: POINT, origin: POINT) -> POINT {
+    POINT {
+        x: location.x - origin.x,
+        y: location.y - origin.y,
+    }
+}
+
+/// Emits one PenMove per coalesced sample. GetPointerPenInfoHistory returns the
+/// newest sample first; strokes must process the oldest first or they run
+/// backwards, so the slice is reversed into chronological order.
+fn push_coalesced_moves(
+    events: &mut VecDeque<Event>,
+    pointer_id: u32,
+    origin: POINT,
+    newest_first: &[POINTER_PEN_INFO],
+) {
+    for pen_info in newest_first.iter().rev() {
+        let location = client_location(pen_info.pointer_info.pt_pixel_location, origin);
+        events.push_back(Event::PenMove(pen_sample_from(
+            pointer_id,
+            pen_info,
+            location,
+        )));
     }
 }
 
@@ -831,6 +899,42 @@ mod tests {
         let drawing = pen_sample_from(1, &info, POINT::default());
         assert_eq!(drawing.pressure, 1.0);
         assert_eq!(drawing.tool, PenTool::Eraser);
+    }
+
+    #[test]
+    fn coalesced_pen_history_arrives_in_chronological_order() {
+        fn entry(timestamp: u64, screen_x: i32) -> POINTER_PEN_INFO {
+            let mut info = POINTER_PEN_INFO::default();
+            info.pointer_info.pt_pixel_location = POINT { x: screen_x, y: 450 };
+            info.pointer_info.pointer_flags = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+            info.pointer_info.performance_count = timestamp;
+            info.pen_mask = PEN_MASK_PRESSURE;
+            info.pressure = 512;
+            info
+        }
+
+        // GetPointerPenInfoHistory returns the newest sample first.
+        let newest_first = [entry(10, 300), entry(9, 200), entry(8, 100)];
+
+        let mut state = WindowState::default();
+        push_coalesced_moves(
+            &mut state.events,
+            7,
+            POINT { x: 100, y: 50 },
+            &newest_first,
+        );
+
+        let mut coordinates = Vec::new();
+        while let Some(event) = state.events.pop_front() {
+            let Event::PenMove(sample) = event else {
+                panic!("expected only PenMove events, got {event:?}");
+            };
+            coordinates.push((sample.timestamp, sample.x, sample.y));
+        }
+        assert_eq!(
+            coordinates,
+            [(8, 0.0, 400.0), (9, 100.0, 400.0), (10, 200.0, 400.0)]
+        );
     }
 
     #[test]

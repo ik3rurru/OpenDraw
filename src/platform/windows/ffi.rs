@@ -386,7 +386,12 @@ unsafe extern "system" {
     pub fn ReleaseCapture() -> BOOL;
     pub fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> BOOL;
     pub fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut POINTER_PEN_INFO) -> BOOL;
-    pub fn ScreenToClient(window: HWND, point: *mut POINT) -> BOOL;
+    pub fn GetPointerPenInfoHistory(
+        pointer_id: u32,
+        entries_count: *mut u32,
+        pen_info: *mut POINTER_PEN_INFO,
+    ) -> BOOL;
+    pub fn ClientToScreen(window: HWND, point: *mut POINT) -> BOOL;
     pub fn InvalidateRect(window: HWND, rect: *const RECT, erase: BOOL) -> BOOL;
     pub fn BeginPaint(window: HWND, paint: *mut PAINTSTRUCT) -> HDC;
     pub fn EndPaint(window: HWND, paint: *const PAINTSTRUCT) -> BOOL;
