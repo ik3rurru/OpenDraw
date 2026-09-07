@@ -4,7 +4,7 @@ use crate::{
     document::{CanvasView, Document, DocumentError, Layer},
     file::{self, ImageFormat, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
-    platform::{DecodedImage, Event, Key, MouseButton},
+    platform::{DecodedImage, Event, Key, MouseButton, PenSample, PenTool},
     tools::{BrushTool, EraserTool, Tool},
     ui::UiContext,
 };
@@ -126,6 +126,9 @@ pub struct App {
     pending_command: Option<Command>,
     document_path: Option<PathBuf>,
     editor_notice: Option<&'static str>,
+    pen_debug: bool,
+    last_pen_sample: Option<PenSample>,
+    pen_samples_this_frame: u32,
     rerender: bool,
 }
 
@@ -160,6 +163,9 @@ impl App {
             pending_command: None,
             document_path: None,
             editor_notice: None,
+            pen_debug: false,
+            last_pen_sample: None,
+            pen_samples_this_frame: 0,
             rerender: false,
         }
     }
@@ -399,6 +405,22 @@ impl App {
             } if self.control_down && self.state == AppState::Editor => {
                 self.pending_command = Some(Command::Import)
             }
+            Event::KeyDown {
+                key: Key::Function(12),
+            } => self.pen_debug = !self.pen_debug,
+            Event::PenProximityIn(sample) | Event::PenDown(sample) | Event::PenMove(sample)
+            | Event::PenUp(sample) => {
+                self.last_pen_sample = Some(sample);
+                self.pen_samples_this_frame += 1;
+            }
+            Event::PenProximityOut { pointer_id } => {
+                if let Some(sample) = self.last_pen_sample.as_mut()
+                    && sample.pointer_id == pointer_id
+                {
+                    sample.in_proximity = false;
+                    sample.in_contact = false;
+                }
+            }
             _ => {}
         }
     }
@@ -411,6 +433,7 @@ impl App {
             self.rerender = false;
             self.render_current_state(framebuffer);
         }
+        self.pen_samples_this_frame = 0;
     }
 
     fn render_current_state(&mut self, framebuffer: &mut FrameBuffer) {
@@ -909,6 +932,47 @@ impl App {
             "NEW DOC",
         ) {
             self.pending_command = Some(Command::New);
+        }
+
+        if self.pen_debug {
+            self.draw_tablet_debug(framebuffer);
+        }
+    }
+
+    fn draw_tablet_debug(&mut self, framebuffer: &mut FrameBuffer) {
+        let sample = match self.last_pen_sample {
+            Some(sample) => sample,
+            None => return,
+        };
+        let x = EDITOR_LEFT_WIDTH as i32 + 16;
+        let y = 70;
+        let lines = [
+            String::from("TABLET DEBUG"),
+            format!("POINTER {}", sample.pointer_id),
+            format!("X {:.2}", sample.x),
+            format!("Y {:.2}", sample.y),
+            format!("PRESSURE {:.3}", sample.pressure),
+            format!("TILT X {:.1} Y {:.1}", sample.tilt_x, sample.tilt_y),
+            format!("ROTATION {:.0}", sample.rotation),
+            format!("CONTACT {} PROX {}", yes_no(sample.in_contact), yes_no(sample.in_proximity)),
+            format!(
+                "BTN1 {} BTN2 {}",
+                yes_no(sample.barrel_button_1),
+                yes_no(sample.barrel_button_2)
+            ),
+            format!("TOOL {}", pen_tool_name(sample.tool)),
+            format!("SAMPLES {}", self.pen_samples_this_frame),
+        ];
+        let panel = Rect::new(x - 8, y - 8, 190, (lines.len() as u32) * 10 + 14);
+        framebuffer.fill_rect(panel, Color::rgba(12, 14, 18, 216));
+        for (index, line) in lines.iter().enumerate() {
+            framebuffer.draw_text(
+                x,
+                y + index as i32 * 10,
+                line,
+                Color::rgb(235, 235, 235),
+                1,
+            );
         }
     }
 
@@ -1618,6 +1682,21 @@ impl App {
     }
 }
 
+fn yes_no(value: bool) -> &'static str {
+    if value { "YES" } else { "NO" }
+}
+
+fn pen_tool_name(tool: PenTool) -> &'static str {
+    match tool {
+        PenTool::Pen => "PEN",
+        PenTool::Eraser => "ERASER",
+        PenTool::Brush => "BRUSH",
+        PenTool::Pencil => "PENCIL",
+        PenTool::Airbrush => "AIRBRUSH",
+        PenTool::Unknown => "UNKNOWN",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2002,6 +2081,64 @@ mod tests {
 
         std::fs::remove_file(png_path).unwrap();
         std::fs::remove_file(bmp_path).unwrap();
+    }
+
+    #[test]
+    fn tablet_debug_overlay_toggles_and_tracks_pen_samples() {
+        fn sample() -> PenSample {
+            PenSample {
+                pointer_id: 42,
+                x: 734.22,
+                y: 421.84,
+                pressure: 0.637,
+                tilt_x: -23.0,
+                tilt_y: 11.0,
+                rotation: 0.0,
+                distance: 0.0,
+                in_contact: true,
+                in_proximity: true,
+                barrel_button_1: false,
+                barrel_button_2: false,
+                tool: PenTool::Pen,
+                timestamp: 1,
+            }
+        }
+
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(2, 2, Color::rgb(255, 255, 255)).unwrap());
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700).unwrap();
+
+        assert!(!app.pen_debug);
+        app.render(&mut framebuffer);
+        let background = framebuffer.get_pixel(130, 64);
+
+        app.handle_event(Event::KeyDown {
+            key: Key::Function(12),
+        });
+        assert!(app.pen_debug);
+
+        app.handle_event(Event::PenMove(sample()));
+        app.handle_event(Event::PenMove(sample()));
+        assert_eq!(app.last_pen_sample, Some(sample()));
+        assert_eq!(app.pen_samples_this_frame, 2);
+
+        app.render(&mut framebuffer);
+        assert_ne!(framebuffer.get_pixel(130, 64), background);
+        assert_eq!(app.pen_samples_this_frame, 0);
+
+        app.handle_event(Event::PenProximityOut { pointer_id: 42 });
+        let mut expected = sample();
+        expected.in_proximity = false;
+        expected.in_contact = false;
+        assert_eq!(app.last_pen_sample, Some(expected));
+
+        app.handle_event(Event::KeyDown {
+            key: Key::Function(12),
+        });
+        assert!(!app.pen_debug);
     }
 
     #[test]

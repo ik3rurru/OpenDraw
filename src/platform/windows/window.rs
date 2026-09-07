@@ -11,7 +11,7 @@ use std::{
 use crate::{
     document::MAX_PIXELS,
     graphics::FrameBuffer,
-    platform::{DecodedImage, Event, Key, MouseButton, SaveChanges},
+    platform::{DecodedImage, Event, Key, MouseButton, PenSample, PenTool, SaveChanges, normalize},
 };
 
 use super::ffi::*;
@@ -489,6 +489,20 @@ unsafe extern "system" fn window_proc(
             });
             0
         }
+        WM_POINTERENTER | WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERLEAVE
+            if !state.is_null() =>
+        {
+            match pen_event(window, message, wparam) {
+                Some(event) => {
+                    // Consuming pen messages ourselves keeps Windows from also
+                    // promoting them to emulated WM_MOUSE* messages, which would
+                    // draw a second stroke per pen stroke.
+                    unsafe { &mut *state }.events.push_back(event);
+                    0
+                }
+                None => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+            }
+        }
         WM_KEYDOWN if !state.is_null() => {
             unsafe { &mut *state }.events.push_back(Event::KeyDown {
                 key: key_from_virtual(wparam as u32),
@@ -562,6 +576,100 @@ fn signed_high_word(value: usize) -> i32 {
 
 fn wheel_delta(wparam: WPARAM) -> f32 {
     signed_high_word(wparam) as f32 / 120.0
+}
+
+/// Extracts the pointer id from a WM_POINTER* message's wParam
+/// (Win32 GET_POINTERID_WPARAM: the low 16 bits).
+fn pointer_id(wparam: WPARAM) -> u32 {
+    (wparam & 0xffff) as u32
+}
+
+/// Translates one WM_POINTER* message into a common pen event.
+/// Returns `None` when the pointer is not a stylus (mouse/touch), letting the
+/// default window procedure keep its usual behavior for those devices.
+fn pen_event(window: HWND, message: UINT, wparam: WPARAM) -> Option<Event> {
+    let pointer_id = pointer_id(wparam);
+    // SAFETY: pointer_id comes from the message's wParam; every out-pointer is a
+    // valid stack local that outlives each synchronous call, and the calls only
+    // fill POD data, retaining no references afterwards.
+    unsafe {
+        let mut pointer_type = 0;
+        if GetPointerType(pointer_id, &mut pointer_type) == 0 || pointer_type != PT_PEN {
+            return None;
+        }
+        if message == WM_POINTERLEAVE {
+            return Some(Event::PenProximityOut {
+                pointer_id: u64::from(pointer_id),
+            });
+        }
+
+        let mut pen_info = POINTER_PEN_INFO::default();
+        if GetPointerPenInfo(pointer_id, &mut pen_info) == 0 {
+            return None;
+        }
+
+        // POINTER_PEN_INFO reports screen coordinates; the brush engine needs
+        // window-relative ones.
+        let mut location = pen_info.pointer_info.pt_pixel_location;
+        if ScreenToClient(window, &mut location) == 0 {
+            return None;
+        }
+
+        let sample = pen_sample_from(pointer_id, &pen_info, location);
+        Some(match message {
+            WM_POINTERENTER => Event::PenProximityIn(sample),
+            WM_POINTERDOWN => Event::PenDown(sample),
+            WM_POINTERUPDATE => Event::PenMove(sample),
+            _ => Event::PenUp(sample),
+        })
+    }
+}
+
+/// Builds the platform-independent `PenSample` from one POINTER_PEN_INFO.
+/// Axes whose penMask bit is absent get neutral values, per the pen model.
+fn pen_sample_from(pointer_id: u32, pen_info: &POINTER_PEN_INFO, client: POINT) -> PenSample {
+    let flags = pen_info.pointer_info.pointer_flags;
+    let in_contact = flags & POINTER_FLAG_INCONTACT != 0;
+    PenSample {
+        pointer_id: u64::from(pointer_id),
+        x: client.x as f32,
+        y: client.y as f32,
+        pressure: if pen_info.pen_mask & PEN_MASK_PRESSURE != 0 {
+            normalize(pen_info.pressure, 1024)
+        } else if in_contact {
+            // Device without pressure support: full pressure while drawing,
+            // never 0.0 or the stroke would be invisible.
+            1.0
+        } else {
+            0.0
+        },
+        tilt_x: if pen_info.pen_mask & PEN_MASK_TILT_X != 0 {
+            pen_info.tilt_x as f32
+        } else {
+            0.0
+        },
+        tilt_y: if pen_info.pen_mask & PEN_MASK_TILT_Y != 0 {
+            pen_info.tilt_y as f32
+        } else {
+            0.0
+        },
+        rotation: if pen_info.pen_mask & PEN_MASK_ROTATION != 0 {
+            pen_info.rotation as f32
+        } else {
+            0.0
+        },
+        distance: 0.0,
+        in_contact,
+        in_proximity: flags & POINTER_FLAG_INRANGE != 0,
+        barrel_button_1: flags & POINTER_FLAG_FIRSTBUTTON != 0,
+        barrel_button_2: flags & POINTER_FLAG_SECONDBUTTON != 0,
+        tool: if pen_info.pen_flags & PEN_FLAGS_INVERTED != 0 {
+            PenTool::Eraser
+        } else {
+            PenTool::Pen
+        },
+        timestamp: pen_info.pointer_info.performance_count,
+    }
 }
 
 fn mouse_button(message: UINT) -> MouseButton {
@@ -669,6 +777,7 @@ mod tests {
         assert_eq!(signed_high_word(coordinates as usize), -20);
         assert_eq!(wheel_delta((120_u32 << 16) as usize), 1.0);
         assert_eq!(key_from_virtual(0x41), Key::Letter('A'));
+        assert_eq!(pointer_id(0x1234_0007), 7);
 
         let mut state = WindowState::default();
         state.push_text(0xd83d);
@@ -677,6 +786,52 @@ mod tests {
             state.events.pop_front(),
             Some(Event::TextInput { character: '😀' })
         );
+    }
+
+    #[test]
+    fn translates_pen_pointer_input_into_pen_samples() {
+        let mut info = POINTER_PEN_INFO::default();
+        info.pointer_info.pointer_flags = POINTER_FLAG_INRANGE
+            | POINTER_FLAG_INCONTACT
+            | POINTER_FLAG_FIRSTBUTTON;
+        info.pointer_info.performance_count = 42;
+        info.pen_mask = PEN_MASK_PRESSURE | PEN_MASK_ROTATION | PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
+        info.pressure = 512;
+        info.rotation = 90;
+        info.tilt_x = -23;
+        info.tilt_y = 11;
+
+        let sample = pen_sample_from(7, &info, POINT { x: 734, y: 421 });
+
+        assert_eq!(sample.pointer_id, 7);
+        assert_eq!((sample.x, sample.y), (734.0, 421.0));
+        assert_eq!(sample.pressure, 0.5);
+        assert_eq!(sample.rotation, 90.0);
+        assert_eq!(sample.tilt_x, -23.0);
+        assert_eq!(sample.tilt_y, 11.0);
+        assert_eq!(sample.timestamp, 42);
+        assert!(sample.in_contact);
+        assert!(sample.in_proximity);
+        assert!(sample.barrel_button_1);
+        assert!(!sample.barrel_button_2);
+        assert_eq!(sample.tool, PenTool::Pen);
+    }
+
+    #[test]
+    fn pen_samples_use_neutral_values_for_unsupported_axes() {
+        let hovering = pen_sample_from(1, &POINTER_PEN_INFO::default(), POINT::default());
+        assert_eq!(hovering.pressure, 0.0);
+        assert_eq!(hovering.tilt_x, 0.0);
+        assert_eq!(hovering.tilt_y, 0.0);
+        assert_eq!(hovering.rotation, 0.0);
+        assert_eq!(hovering.tool, PenTool::Pen);
+
+        let mut info = POINTER_PEN_INFO::default();
+        info.pointer_info.pointer_flags = POINTER_FLAG_INCONTACT;
+        info.pen_flags = PEN_FLAGS_INVERTED;
+        let drawing = pen_sample_from(1, &info, POINT::default());
+        assert_eq!(drawing.pressure, 1.0);
+        assert_eq!(drawing.tool, PenTool::Eraser);
     }
 
     #[test]

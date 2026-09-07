@@ -50,6 +50,11 @@ pub const WM_RBUTTONUP: UINT = 0x0205;
 pub const WM_MBUTTONDOWN: UINT = 0x0207;
 pub const WM_MBUTTONUP: UINT = 0x0208;
 pub const WM_MOUSEWHEEL: UINT = 0x020a;
+pub const WM_POINTERUPDATE: UINT = 0x0245;
+pub const WM_POINTERDOWN: UINT = 0x0246;
+pub const WM_POINTERUP: UINT = 0x0247;
+pub const WM_POINTERENTER: UINT = 0x0249;
+pub const WM_POINTERLEAVE: UINT = 0x024a;
 pub const PM_REMOVE: UINT = 0x0001;
 pub const GWLP_USERDATA: i32 = -21;
 pub const IDC_ARROW: *const u16 = 32512_usize as *const u16;
@@ -90,6 +95,20 @@ pub const OFN_EXPLORER: DWORD = 0x0008_0000;
 pub const IMAGE_LOCK_MODE_READ: UINT = 1;
 pub const IMAGE_LOCK_MODE_USER_INPUT_BUFFER: UINT = 4;
 pub const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200a;
+// POINTER_INPUT_TYPE value for a stylus.
+pub const PT_PEN: u32 = 3;
+// POINTER_INFO.pointerFlags bits.
+pub const POINTER_FLAG_INRANGE: DWORD = 0x0000_0002;
+pub const POINTER_FLAG_INCONTACT: DWORD = 0x0000_0004;
+pub const POINTER_FLAG_FIRSTBUTTON: DWORD = 0x0000_0010;
+pub const POINTER_FLAG_SECONDBUTTON: DWORD = 0x0000_0020;
+// POINTER_PEN_INFO.penFlags bit: the eraser end of the stylus is in use.
+pub const PEN_FLAGS_INVERTED: DWORD = 0x0000_0001;
+// POINTER_PEN_INFO.penMask bits: which pen axes are valid in this sample.
+pub const PEN_MASK_PRESSURE: DWORD = 0x0000_0001;
+pub const PEN_MASK_ROTATION: DWORD = 0x0000_0002;
+pub const PEN_MASK_TILT_X: DWORD = 0x0000_0004;
+pub const PEN_MASK_TILT_Y: DWORD = 0x0000_0008;
 
 pub type WndProc = Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>;
 
@@ -108,7 +127,7 @@ pub struct WNDCLASSW {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct POINT {
     pub x: LONG,
     pub y: LONG,
@@ -258,6 +277,39 @@ pub struct BITMAP_DATA {
     pub Reserved: usize,
 }
 
+// Reproduces Win32 POINTER_INFO (winuser.h). Field order, types and alignment
+// must match the native layout exactly: HANDLE is pointer-sized, which #[repr(C)]
+// resolves per target exactly like the C compiler does.
+#[repr(C)]
+#[derive(Default)]
+pub struct POINTER_INFO {
+    pub pointer_type: u32,
+    pub pointer_id: u32,
+    pub frame_id: u32,
+    pub pointer_flags: DWORD,
+    pub h_target: HANDLE,
+    pub pt_pixel_location: POINT,
+    pub pt_himetric_location: POINT,
+    pub dw_time: DWORD,
+    pub history_count: u32,
+    pub input_data: i32,
+    pub key_states: DWORD,
+    pub performance_count: u64,
+}
+
+// Reproduces Win32 POINTER_PEN_INFO (winuser.h).
+#[repr(C)]
+#[derive(Default)]
+pub struct POINTER_PEN_INFO {
+    pub pointer_info: POINTER_INFO,
+    pub pen_flags: DWORD,
+    pub pen_mask: DWORD,
+    pub pressure: u32,
+    pub rotation: u32,
+    pub tilt_x: i32,
+    pub tilt_y: i32,
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetModuleHandleW(module_name: *const u16) -> HINSTANCE;
@@ -332,6 +384,9 @@ unsafe extern "system" {
     pub fn GetWindowLongPtrW(window: HWND, index: i32) -> isize;
     pub fn SetCapture(window: HWND) -> HWND;
     pub fn ReleaseCapture() -> BOOL;
+    pub fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> BOOL;
+    pub fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut POINTER_PEN_INFO) -> BOOL;
+    pub fn ScreenToClient(window: HWND, point: *mut POINT) -> BOOL;
     pub fn InvalidateRect(window: HWND, rect: *const RECT, erase: BOOL) -> BOOL;
     pub fn BeginPaint(window: HWND, paint: *mut PAINTSTRUCT) -> HDC;
     pub fn EndPaint(window: HWND, paint: *const PAINTSTRUCT) -> BOOL;

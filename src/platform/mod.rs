@@ -5,9 +5,7 @@ mod input;
 mod windows;
 
 pub use event::{Event, Key, MouseButton};
-// Consumed from PEN-002 onward by the platform tablet backends.
-#[allow(unused_imports)]
-pub use input::{PenCapabilities, PenSample, PenTool, PointerType};
+pub use input::{PenSample, PenTool, normalize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveChanges {
