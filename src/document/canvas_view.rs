@@ -34,6 +34,8 @@ impl CanvasView {
         }
     }
 
+    /// Continuous document coordinates: (0, 0) is its top-left edge and pixel
+    /// (x, y) occupies [x, x + 1) x [y, y + 1), centered at (x + 0.5, y + 0.5).
     pub fn screen_to_canvas(&self, x: f32, y: f32) -> (f32, f32) {
         (
             (x - self.offset_x) / self.zoom,
@@ -125,16 +127,16 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(0, 0, 0, Color::rgba(255, 0, 0, 128));
+            .stamp_circle(0.5, 0.5, 0.5, Color::rgba(255, 0, 0, 128));
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(1, 0, 0, Color::rgb(0, 0, 255));
+            .stamp_circle(1.5, 0.5, 0.5, Color::rgb(0, 0, 255));
         document.add_layer().unwrap();
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(0, 0, 0, Color::rgba(0, 255, 0, 128));
+            .stamp_circle(0.5, 0.5, 0.5, Color::rgba(0, 255, 0, 128));
 
         let view = CanvasView::default();
         let mut framebuffer = FrameBuffer::default();

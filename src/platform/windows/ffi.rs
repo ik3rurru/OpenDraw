@@ -32,6 +32,7 @@ pub const CW_USEDEFAULT: i32 = 0x8000_0000_u32 as i32;
 pub const SW_SHOW: i32 = 5;
 pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_SIZE: UINT = 0x0005;
+pub const WM_KILLFOCUS: UINT = 0x0008;
 pub const WM_PAINT: UINT = 0x000f;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_QUIT: UINT = 0x0012;
@@ -55,6 +56,7 @@ pub const WM_POINTERDOWN: UINT = 0x0246;
 pub const WM_POINTERUP: UINT = 0x0247;
 pub const WM_POINTERENTER: UINT = 0x0249;
 pub const WM_POINTERLEAVE: UINT = 0x024a;
+pub const WM_POINTERCAPTURECHANGED: UINT = 0x024c;
 pub const PM_REMOVE: UINT = 0x0001;
 pub const GWLP_USERDATA: i32 = -21;
 pub const IDC_ARROW: *const u16 = 32512_usize as *const u16;
@@ -102,8 +104,11 @@ pub const POINTER_FLAG_INRANGE: DWORD = 0x0000_0002;
 pub const POINTER_FLAG_INCONTACT: DWORD = 0x0000_0004;
 pub const POINTER_FLAG_FIRSTBUTTON: DWORD = 0x0000_0010;
 pub const POINTER_FLAG_SECONDBUTTON: DWORD = 0x0000_0020;
-// POINTER_PEN_INFO.penFlags bit: the eraser end of the stylus is in use.
-pub const PEN_FLAGS_INVERTED: DWORD = 0x0000_0001;
+pub const POINTER_FLAG_CANCELED: DWORD = 0x0000_8000;
+// POINTER_PEN_INFO.penFlags, from WinUser.h (distinct from pointer buttons).
+pub const PEN_FLAG_BARREL: DWORD = 0x0000_0001;
+pub const PEN_FLAG_INVERTED: DWORD = 0x0000_0002;
+pub const PEN_FLAG_ERASER: DWORD = 0x0000_0004;
 // POINTER_PEN_INFO.penMask bits: which pen axes are valid in this sample.
 pub const PEN_MASK_PRESSURE: DWORD = 0x0000_0001;
 pub const PEN_MASK_ROTATION: DWORD = 0x0000_0002;
@@ -280,6 +285,7 @@ pub struct BITMAP_DATA {
 // Reproduces Win32 POINTER_INFO (winuser.h). Field order, types and alignment
 // must match the native layout exactly: HANDLE is pointer-sized, which #[repr(C)]
 // resolves per target exactly like the C compiler does.
+// https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-pointer_info
 #[repr(C)]
 #[derive(Default)]
 pub struct POINTER_INFO {
@@ -287,14 +293,18 @@ pub struct POINTER_INFO {
     pub pointer_id: u32,
     pub frame_id: u32,
     pub pointer_flags: DWORD,
-    pub h_target: HANDLE,
+    pub source_device: HANDLE,
+    pub h_target: HWND,
     pub pt_pixel_location: POINT,
     pub pt_himetric_location: POINT,
+    pub pt_pixel_location_raw: POINT,
+    pub pt_himetric_location_raw: POINT,
     pub dw_time: DWORD,
     pub history_count: u32,
     pub input_data: i32,
     pub key_states: DWORD,
     pub performance_count: u64,
+    pub button_change_type: u32,
 }
 
 // Reproduces Win32 POINTER_PEN_INFO (winuser.h).
@@ -309,6 +319,23 @@ pub struct POINTER_PEN_INFO {
     pub tilt_x: i32,
     pub tilt_y: i32,
 }
+
+// Guard the native write boundary even when building without running tests.
+// Measured with MSVC and the Windows SDK; the fixture generator also records
+// every field offset. Omitting unused fields here corrupts subsequent axes and
+// lets GetPointerPenInfo[History] write past its output buffer.
+const _: () = {
+    let pointer_size = if cfg!(target_pointer_width = "64") {
+        96
+    } else {
+        88
+    };
+    assert!(std::mem::size_of::<POINTER_INFO>() == pointer_size);
+    assert!(std::mem::align_of::<POINTER_INFO>() == 8);
+    assert!(std::mem::size_of::<POINTER_PEN_INFO>() == pointer_size + 24);
+    assert!(std::mem::align_of::<POINTER_PEN_INFO>() == 8);
+    assert!(std::mem::offset_of!(POINTER_PEN_INFO, pressure) == pointer_size + 8);
+};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -392,6 +419,7 @@ unsafe extern "system" {
         pen_info: *mut POINTER_PEN_INFO,
     ) -> BOOL;
     pub fn ClientToScreen(window: HWND, point: *mut POINT) -> BOOL;
+    pub fn PhysicalToLogicalPointForPerMonitorDPI(window: HWND, point: *mut POINT) -> BOOL;
     pub fn InvalidateRect(window: HWND, rect: *const RECT, erase: BOOL) -> BOOL;
     pub fn BeginPaint(window: HWND, paint: *mut PAINTSTRUCT) -> HDC;
     pub fn EndPaint(window: HWND, paint: *const PAINTSTRUCT) -> BOOL;
@@ -414,4 +442,72 @@ unsafe extern "system" {
         usage: UINT,
         raster_operation: DWORD,
     ) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn pen_structures_match_windows_sdk_field_offsets() {
+        // Independent reference: tests/fixtures/windows_pen_fixture.c, built
+        // against WinUser.h using both x64 and x86 MSVC toolchains.
+        let (pointer_size, native_offsets) = if cfg!(target_pointer_width = "64") {
+            (
+                96,
+                [0, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64, 68, 72, 76, 80, 88],
+            )
+        } else {
+            (
+                88,
+                [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 60, 64, 68, 72, 80],
+            )
+        };
+        assert_eq!(size_of::<POINTER_INFO>(), pointer_size);
+        assert_eq!(align_of::<POINTER_INFO>(), 8);
+        assert_eq!(
+            [
+                offset_of!(POINTER_INFO, pointer_type),
+                offset_of!(POINTER_INFO, pointer_id),
+                offset_of!(POINTER_INFO, frame_id),
+                offset_of!(POINTER_INFO, pointer_flags),
+                offset_of!(POINTER_INFO, source_device),
+                offset_of!(POINTER_INFO, h_target),
+                offset_of!(POINTER_INFO, pt_pixel_location),
+                offset_of!(POINTER_INFO, pt_himetric_location),
+                offset_of!(POINTER_INFO, pt_pixel_location_raw),
+                offset_of!(POINTER_INFO, pt_himetric_location_raw),
+                offset_of!(POINTER_INFO, dw_time),
+                offset_of!(POINTER_INFO, history_count),
+                offset_of!(POINTER_INFO, input_data),
+                offset_of!(POINTER_INFO, key_states),
+                offset_of!(POINTER_INFO, performance_count),
+                offset_of!(POINTER_INFO, button_change_type),
+            ],
+            native_offsets
+        );
+        assert_eq!(size_of::<POINTER_PEN_INFO>(), pointer_size + 24);
+        assert_eq!(align_of::<POINTER_PEN_INFO>(), 8);
+        assert_eq!(
+            [
+                offset_of!(POINTER_PEN_INFO, pointer_info),
+                offset_of!(POINTER_PEN_INFO, pen_flags),
+                offset_of!(POINTER_PEN_INFO, pen_mask),
+                offset_of!(POINTER_PEN_INFO, pressure),
+                offset_of!(POINTER_PEN_INFO, rotation),
+                offset_of!(POINTER_PEN_INFO, tilt_x),
+                offset_of!(POINTER_PEN_INFO, tilt_y),
+            ],
+            [
+                0,
+                pointer_size,
+                pointer_size + 4,
+                pointer_size + 8,
+                pointer_size + 12,
+                pointer_size + 16,
+                pointer_size + 20
+            ]
+        );
+    }
 }

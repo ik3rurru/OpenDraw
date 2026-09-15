@@ -306,6 +306,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn antialiased_paint_and_erase_survive_document_and_png_round_trips() {
+        let base =
+            std::env::temp_dir().join(format!("opendraw-{}-antialiasing", std::process::id()));
+        let odraw = base.with_extension("odraw");
+        let png = base.with_extension("png");
+        let clear = Color::rgba(0, 0, 0, 0);
+        let mut document = Document::new(24, 18, clear).unwrap();
+        let pixels = &mut document.active_layer_mut().pixels;
+        pixels.stamp_circle(11.25, 8.75, 6.125, Color::rgba(211, 50, 90, 220));
+        pixels.erase_circle(13.75, 10.25, 3.75, 190);
+        assert!(
+            pixels
+                .pixels
+                .iter()
+                .any(|&p| (1..220).contains(&Color::from_u32(p).alpha()))
+        );
+        let expected = pixels.pixels.clone();
+        save(&document, &odraw).unwrap();
+        let loaded = load(&odraw).unwrap();
+        assert_eq!(loaded.active_layer().pixels.pixels, expected);
+        export(&loaded, &png, ImageFormat::Png).unwrap();
+        #[cfg(target_os = "windows")]
+        {
+            // Decode independently of our PNG writer with the native reader.
+            let decoded = crate::platform::decode_image(&png).unwrap();
+            assert_eq!((decoded.width, decoded.height), (24, 18));
+            assert_eq!(decoded.pixels, expected);
+        }
+        std::fs::remove_file(odraw).unwrap();
+        std::fs::remove_file(png).unwrap();
+    }
+
+    #[test]
     fn round_trips_documents_and_rejects_corrupt_headers() {
         let mut document = Document::new(3, 2, Color::rgb(250, 250, 250)).unwrap();
         document.active_layer_mut().name = String::from("FONDO");
@@ -316,7 +349,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(1, 1, 0, Color::rgba(10, 20, 30, 40));
+            .stamp_circle(1.5, 1.5, 0.5, Color::rgba(10, 20, 30, 40));
 
         let mut bytes = Vec::new();
         write_document(&document, &mut bytes).unwrap();

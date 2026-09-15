@@ -1,3 +1,5 @@
+mod color_picker;
+
 use crate::{
     graphics::{Color, FrameBuffer, Rect},
     platform::{Event, Key, MouseButton},
@@ -43,6 +45,32 @@ impl UiContext {
             Event::MouseUp { button } if *button == MouseButton::Left => {
                 self.left_down = false;
             }
+            Event::PenProximityIn(sample) => self.pointer = (sample.x as i32, sample.y as i32),
+            Event::PenDown(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                if sample.in_contact {
+                    self.left_down = true;
+                    self.mouse_pressed_at = Some(self.pointer);
+                }
+            }
+            Event::PenMove(sample) | Event::PenUp(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                if !sample.in_contact || matches!(event, Event::PenUp(_)) {
+                    self.left_down = false;
+                }
+            }
+            Event::PenProximityOut { .. } => {
+                // A quick tap may leave proximity before the next frame. Keep
+                // its completed click, but cancel a contact that lost its Up.
+                if self.left_down {
+                    self.release_pointer();
+                } else {
+                    self.dragging = None;
+                }
+            }
+            Event::FocusLost | Event::PenCancelled { .. } => {
+                self.release_pointer();
+            }
             Event::KeyDown { key: Key::Tab } => self.focus_next(),
             Event::KeyDown {
                 key: Key::Enter | Key::Space,
@@ -76,6 +104,10 @@ impl UiContext {
 
     pub fn clear_focus(&mut self) {
         self.focused = None;
+    }
+
+    pub fn focused_id(&self) -> Option<u32> {
+        self.focused
     }
 
     pub fn release_pointer(&mut self) {

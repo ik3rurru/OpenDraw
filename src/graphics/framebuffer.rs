@@ -155,6 +155,56 @@ impl FrameBuffer {
         }
     }
 
+    /// A one-pixel outline with continuous center/radius and antialiased edges.
+    pub fn draw_circle_outline(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        color: Color,
+        clip: Rect,
+    ) {
+        if !center_x.is_finite() || !center_y.is_finite() || !radius.is_finite() || radius < 0.0 {
+            return;
+        }
+        let outer = radius + 1.0;
+        let inner_squared = (radius - 1.0).max(0.0).powi(2);
+        let outer_squared = outer * outer;
+        let left = (center_x - outer).floor().max(clip.x as f32).max(0.0) as u32;
+        let top = (center_y - outer).floor().max(clip.y as f32).max(0.0) as u32;
+        let right = (center_x + outer)
+            .ceil()
+            .min(clip.x as f32 + clip.width as f32)
+            .min(self.width as f32)
+            .max(0.0) as u32;
+        let bottom = (center_y + outer)
+            .ceil()
+            .min(clip.y as f32 + clip.height as f32)
+            .min(self.height as f32)
+            .max(0.0) as u32;
+        for y in top..bottom {
+            let dy = y as f32 + 0.5 - center_y;
+            for x in left..right {
+                let dx = x as f32 + 0.5 - center_x;
+                let distance_squared = dx * dx + dy * dy;
+                if distance_squared > outer_squared || distance_squared < inner_squared {
+                    continue;
+                }
+                let coverage = (1.0 - (distance_squared.sqrt() - radius).abs()).max(0.0);
+                self.blend_pixel(
+                    x as i32,
+                    y as i32,
+                    Color::rgba(
+                        color.red(),
+                        color.green(),
+                        color.blue(),
+                        (f32::from(color.alpha()) * coverage).round() as u8,
+                    ),
+                );
+            }
+        }
+    }
+
     fn pixel_index(&self, x: i32, y: i32) -> Option<usize> {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return None;
@@ -206,6 +256,58 @@ impl FrameBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_cursor_outlines_are_symmetric_smooth_and_clipped() {
+        let mut frame = FrameBuffer::default();
+        frame.resize(15, 15).unwrap();
+        let clear = Color::rgba(0, 0, 0, 0);
+        frame.clear(clear);
+        frame.draw_circle_outline(
+            7.5,
+            7.5,
+            3.25,
+            Color::rgb(255, 255, 255),
+            Rect::new(0, 0, 15, 15),
+        );
+        assert_eq!(frame.get_pixel(7, 7), Some(clear));
+        assert!((1..255).contains(&frame.get_pixel(10, 7).unwrap().alpha()));
+        for y in 0..15 {
+            for x in 0..15 {
+                assert_eq!(frame.get_pixel(x, y), frame.get_pixel(14 - x, y));
+                assert_eq!(frame.get_pixel(x, y), frame.get_pixel(y, x));
+            }
+        }
+        let first = frame.pixels.clone();
+        frame.clear(clear);
+        frame.draw_circle_outline(
+            7.75,
+            7.25,
+            3.5,
+            Color::rgb(255, 255, 255),
+            Rect::new(0, 0, 15, 15),
+        );
+        assert_ne!(frame.pixels, first);
+        let complete = frame.pixels.clone();
+        frame.clear(clear);
+        frame.draw_circle_outline(
+            7.75,
+            7.25,
+            3.5,
+            Color::rgb(255, 255, 255),
+            Rect::new(6, 6, 6, 6),
+        );
+        for y in 0..15 {
+            for x in 0..15 {
+                let expected = if (6..12).contains(&x) && (6..12).contains(&y) {
+                    Color::from_u32(complete[(y * 15 + x) as usize])
+                } else {
+                    clear
+                };
+                assert_eq!(frame.get_pixel(x, y), Some(expected));
+            }
+        }
+    }
 
     #[test]
     fn checkerboard_alternates_cells() {

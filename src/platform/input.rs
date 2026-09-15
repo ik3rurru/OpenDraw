@@ -4,11 +4,8 @@
 //! translated by `platform` code into these types. The rest of OpenDraw never
 //! sees the operating system's representation of a stylus.
 
-// ponytail: PEN-001 defines the pen model before its consumers exist; the
-// platform backends from PEN-002 construct these. Remove once they do.
-#![allow(dead_code)]
-
 /// Physical kind of a pointer device.
+#[allow(dead_code)] // Reserved for additional pointer backends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerType {
     Mouse,
@@ -18,6 +15,7 @@ pub enum PointerType {
 }
 
 /// Physical tool reported by the stylus hardware.
+#[allow(dead_code)] // Some tool types are only exposed by future backends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PenTool {
     Pen,
@@ -30,6 +28,7 @@ pub enum PenTool {
 
 /// Data axes a tablet can actually report. Never assume an axis exists: a
 /// missing axis must be replaced with a neutral value by the backend.
+#[allow(dead_code)] // Capability discovery belongs to the device backends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PenCapabilities {
     pub pressure: bool,
@@ -65,6 +64,29 @@ pub struct PenSample {
     pub barrel_button_2: bool,
     pub tool: PenTool,
     pub timestamp: u64,
+}
+
+impl PenSample {
+    /// Mouse fallback for the shared brush pipeline. Mouse events do not carry
+    /// a timestamp yet; zero denotes an unavailable timestamp.
+    pub fn mouse(x: f32, y: f32, in_contact: bool) -> Self {
+        Self {
+            pointer_id: 0,
+            x,
+            y,
+            pressure: if in_contact { 1.0 } else { 0.0 },
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            rotation: 0.0,
+            distance: 0.0,
+            in_contact,
+            in_proximity: true,
+            barrel_button_1: false,
+            barrel_button_2: false,
+            tool: PenTool::Pen,
+            timestamp: 0,
+        }
+    }
 }
 
 /// Converts a raw axis value over `0..=max` into the normalized `0.0..=1.0`

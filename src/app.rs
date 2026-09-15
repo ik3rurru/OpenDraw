@@ -1,3 +1,5 @@
+mod new_document;
+
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -5,7 +7,7 @@ use crate::{
     file::{self, ImageFormat, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{DecodedImage, Event, Key, MouseButton, PenSample, PenTool},
-    tools::{BrushTool, EraserTool, Tool},
+    tools::{BrushSample, BrushTool, EraserTool, Tool},
     ui::UiContext,
 };
 
@@ -13,7 +15,7 @@ const MAX_DOCUMENT_SIZE: u32 = 16_384;
 const WIDTH_INPUT: u32 = 1;
 const HEIGHT_INPUT: u32 = 2;
 const TRANSPARENT_RADIO: u32 = 3;
-const WHITE_RADIO: u32 = 4;
+const COLOR_RADIO: u32 = 4;
 const CANCEL_BUTTON: u32 = 5;
 const CREATE_BUTTON: u32 = 6;
 const NEW_DOCUMENT_BUTTON: u32 = 7;
@@ -29,13 +31,9 @@ const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
 const SELECT_EYEDROPPER_BUTTON: u32 = 24;
 const SELECT_BUCKET_BUTTON: u32 = 25;
-const RED_SLIDER: u32 = 26;
-const GREEN_SLIDER: u32 = 27;
-const BLUE_SLIDER: u32 = 28;
 const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
-const COLOR_SQUARE: u32 = 33;
-const HUE_SLIDER: u32 = 34;
+const COLOR_PICKER_BASE: u32 = 200;
 const OPEN_DOCUMENT_BUTTON: u32 = 35;
 const SAVE_DOCUMENT_BUTTON: u32 = 36;
 const EXPORT_IMAGE_BUTTON: u32 = 37;
@@ -50,7 +48,7 @@ const LAYER_ROW_HEIGHT: u32 = 58;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
     Transparent,
-    White,
+    Color,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +63,12 @@ enum ActiveTool {
     Eraser,
     Eyedropper,
     Bucket,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputPointer {
+    Mouse,
+    Pen(u64),
 }
 
 enum EditorIcon {
@@ -105,14 +109,20 @@ pub struct App {
     width_input: String,
     height_input: String,
     background: Background,
+    background_color: Color,
+    background_hue: u32,
+    new_document_scroll: i32,
     validation_error: Option<&'static str>,
     document: Option<Document>,
     canvas_view: CanvasView,
     pointer: (i32, i32),
+    pointer_contact: Option<InputPointer>,
+    pointer_is_pen: bool,
     panning: bool,
     brush: BrushTool,
     eraser: EraserTool,
     active_tool: ActiveTool,
+    stroke_tool: Option<ActiveTool>,
     picker_hue: u32,
     control_down: bool,
     undo_history: Vec<Snapshot>,
@@ -141,15 +151,21 @@ impl App {
             state: AppState::NewDocument,
             width_input: String::from("1920"),
             height_input: String::from("1080"),
-            background: Background::White,
+            background: Background::Color,
+            background_color: Color::rgb(255, 255, 255),
+            background_hue: 0,
+            new_document_scroll: 0,
             validation_error: None,
             document: None,
             canvas_view: CanvasView::default(),
             pointer: (0, 0),
+            pointer_contact: None,
+            pointer_is_pen: false,
             panning: false,
             brush: BrushTool::default(),
             eraser: EraserTool::default(),
             active_tool: ActiveTool::Brush,
+            stroke_tool: None,
             picker_hue: 0,
             control_down: false,
             undo_history: Vec::new(),
@@ -178,6 +194,9 @@ impl App {
         let command = self.pending_command.take();
         if command.is_some() {
             self.ui.release_pointer();
+            self.end_tool();
+            self.pointer_contact = None;
+            self.panning = false;
         }
         command
     }
@@ -189,6 +208,11 @@ impl App {
     pub fn start_new_document(&mut self) {
         self.end_tool();
         self.state = AppState::NewDocument;
+        self.background = Background::Color;
+        self.background_color = Color::rgb(255, 255, 255);
+        self.background_hue = 0;
+        self.new_document_scroll = 0;
+        self.validation_error = None;
         self.document = None;
         self.document_path = None;
         self.current_revision = 0;
@@ -311,22 +335,70 @@ impl App {
     }
 
     pub fn handle_event(&mut self, event: Event) {
+        let source = match event {
+            Event::PenProximityIn(sample)
+            | Event::PenDown(sample)
+            | Event::PenMove(sample)
+            | Event::PenUp(sample) => {
+                if !sample.x.is_finite() || !sample.y.is_finite() {
+                    return;
+                }
+                Some(InputPointer::Pen(sample.pointer_id))
+            }
+            Event::PenProximityOut { pointer_id } | Event::PenCancelled { pointer_id } => {
+                Some(InputPointer::Pen(pointer_id))
+            }
+            Event::MouseMove { .. }
+            | Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseWheel { .. } => Some(InputPointer::Mouse),
+            _ => None,
+        };
+        // One contact owns a drag until release, including drags in the UI.
+        // Hover alone never disables the physical mouse.
+        if let Some(source) = source
+            && (self.pointer_contact.is_some_and(|owner| owner != source)
+                || (self.panning && source != InputPointer::Mouse))
+        {
+            return;
+        }
+        if let Event::PenProximityIn(sample)
+        | Event::PenDown(sample)
+        | Event::PenMove(sample)
+        | Event::PenUp(sample) = event
+        {
+            self.last_pen_sample = Some(sample);
+            self.pen_samples_this_frame = self.pen_samples_this_frame.saturating_add(1);
+        }
         self.ui.handle_event(&event);
         match event {
             Event::CloseRequested => self.pending_command = Some(Command::Exit),
+            Event::FocusLost => {
+                self.cancel_tool();
+                self.pointer_contact = None;
+                self.panning = false;
+                self.control_down = false;
+                self.pointer_is_pen = false;
+                if let Some(sample) = self.last_pen_sample.as_mut() {
+                    sample.in_contact = false;
+                    sample.in_proximity = false;
+                }
+            }
             Event::Resized { width, height } => self.window_size = (width, height),
             Event::MouseMove { x, y } => {
                 if self.panning {
                     self.canvas_view.pan(x - self.pointer.0, y - self.pointer.1);
                 }
                 self.pointer = (x, y);
-                if self.tool_is_active() {
-                    self.move_tool(x, y);
+                self.pointer_is_pen = false;
+                if self.pointer_contact == Some(InputPointer::Mouse) && self.tool_is_active() {
+                    self.move_tool(PenSample::mouse(x as f32, y as f32, true));
                 }
             }
             Event::MouseDown {
                 button: MouseButton::Middle,
             } if self.state == AppState::Editor
+                && self.pointer_contact.is_none()
                 && self
                     .editor_viewport()
                     .contains(self.pointer.0, self.pointer.1) =>
@@ -335,15 +407,29 @@ impl App {
             }
             Event::MouseDown {
                 button: MouseButton::Left,
-            } if self.state == AppState::Editor => {
-                self.begin_tool(self.pointer.0, self.pointer.1);
+            } if self.pointer_contact.is_none() && !self.panning => {
+                self.pointer_contact = Some(InputPointer::Mouse);
+                self.pointer_is_pen = false;
+                if self.state == AppState::Editor {
+                    self.begin_tool(PenSample::mouse(
+                        self.pointer.0 as f32,
+                        self.pointer.1 as f32,
+                        true,
+                    ));
+                }
             }
             Event::MouseUp {
                 button: MouseButton::Middle,
             } => self.panning = false,
             Event::MouseUp {
                 button: MouseButton::Left,
-            } => self.end_tool(),
+            } => {
+                self.end_tool();
+                self.pointer_contact = None;
+            }
+            Event::MouseWheel { delta } if self.state == AppState::NewDocument => {
+                self.scroll_new_document(delta);
+            }
             Event::MouseWheel { delta }
                 if self.state == AppState::Editor
                     && self
@@ -370,6 +456,7 @@ impl App {
                         .editor_viewport()
                         .contains(self.pointer.0, self.pointer.1) =>
             {
+                self.end_tool();
                 self.canvas_view
                     .zoom_at(1.1_f32.powf(delta), self.pointer.0, self.pointer.1);
             }
@@ -379,6 +466,9 @@ impl App {
             Event::KeyDown {
                 key: Key::Backspace,
             } => self.validation_error = None,
+            Event::KeyDown { key: Key::Tab } if self.state == AppState::NewDocument => {
+                self.reveal_new_document_focus();
+            }
             Event::KeyDown { key: Key::Control } => self.control_down = true,
             Event::KeyUp { key: Key::Control } => self.control_down = false,
             Event::KeyDown {
@@ -408,12 +498,45 @@ impl App {
             Event::KeyDown {
                 key: Key::Function(12),
             } => self.pen_debug = !self.pen_debug,
-            Event::PenProximityIn(sample) | Event::PenDown(sample) | Event::PenMove(sample)
-            | Event::PenUp(sample) => {
-                self.last_pen_sample = Some(sample);
-                self.pen_samples_this_frame += 1;
+            Event::PenProximityIn(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                self.pointer_is_pen = true;
             }
-            Event::PenProximityOut { pointer_id } => {
+            Event::PenDown(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                self.pointer_is_pen = true;
+                if sample.in_contact && self.pointer_contact.is_none() {
+                    self.pointer_contact = Some(InputPointer::Pen(sample.pointer_id));
+                    if self.state == AppState::Editor {
+                        self.begin_tool(sample);
+                    }
+                }
+            }
+            Event::PenMove(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                self.pointer_is_pen = true;
+                if self.pointer_contact == Some(InputPointer::Pen(sample.pointer_id)) {
+                    if sample.in_contact {
+                        self.move_tool(sample);
+                    } else {
+                        self.end_tool();
+                        self.pointer_contact = None;
+                    }
+                }
+            }
+            Event::PenUp(sample) => {
+                self.pointer = (sample.x as i32, sample.y as i32);
+                self.pointer_is_pen = true;
+                if self.pointer_contact == Some(InputPointer::Pen(sample.pointer_id)) {
+                    self.end_tool();
+                    self.pointer_contact = None;
+                }
+            }
+            Event::PenProximityOut { pointer_id } | Event::PenCancelled { pointer_id } => {
+                if self.pointer_contact == Some(InputPointer::Pen(pointer_id)) {
+                    self.cancel_tool();
+                    self.pointer_contact = None;
+                }
                 if let Some(sample) = self.last_pen_sample.as_mut()
                     && sample.pointer_id == pointer_id
                 {
@@ -450,98 +573,6 @@ impl App {
         self.ui.end_frame();
     }
 
-    fn render_new_document(&mut self, framebuffer: &mut FrameBuffer) {
-        let (center_x, center_y) = self.window_center();
-        let panel = Rect::new(center_x - 280, center_y - 215, 560, 430);
-        self.ui.panel(framebuffer, panel);
-        self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 26, "NEW DOCUMENT");
-        framebuffer.draw_line(
-            panel.x + 486,
-            panel.y + 46,
-            panel.x + 518,
-            panel.y + 22,
-            Color::rgb(90, 155, 230),
-        );
-
-        self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 86, "WIDTH");
-        self.ui.text_input(
-            framebuffer,
-            WIDTH_INPUT,
-            Rect::new(panel.x + 250, panel.y + 70, 220, 42),
-            &mut self.width_input,
-        );
-        self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 140, "HEIGHT");
-        self.ui.text_input(
-            framebuffer,
-            HEIGHT_INPUT,
-            Rect::new(panel.x + 250, panel.y + 124, 220, 42),
-            &mut self.height_input,
-        );
-
-        self.ui
-            .label(framebuffer, panel.x + 28, panel.y + 198, "BACKGROUND");
-        if self.ui.radio_button(
-            framebuffer,
-            TRANSPARENT_RADIO,
-            panel.x + 44,
-            panel.y + 238,
-            "TRANSPARENT",
-            self.background == Background::Transparent,
-        ) {
-            self.background = Background::Transparent;
-            self.rerender = true;
-        }
-        if self.ui.radio_button(
-            framebuffer,
-            WHITE_RADIO,
-            panel.x + 44,
-            panel.y + 274,
-            "WHITE",
-            self.background == Background::White,
-        ) {
-            self.background = Background::White;
-            self.rerender = true;
-        }
-
-        if let Some(error) = self.validation_error.or(self.editor_notice) {
-            self.ui.colored_label(
-                framebuffer,
-                panel.x + 28,
-                panel.y + 310,
-                error,
-                Color::rgb(230, 90, 80),
-            );
-        }
-
-        if self.ui.button(
-            framebuffer,
-            OPEN_DOCUMENT_BUTTON,
-            Rect::new(panel.x + 28, panel.y + 356, 144, 48),
-            "OPEN",
-        ) {
-            self.pending_command = Some(Command::Open);
-        }
-        if self.ui.button(
-            framebuffer,
-            CANCEL_BUTTON,
-            Rect::new(panel.x + 188, panel.y + 356, 150, 48),
-            "CANCEL",
-        ) {
-            self.pending_command = Some(Command::Exit);
-        }
-        if self.ui.button(
-            framebuffer,
-            CREATE_BUTTON,
-            Rect::new(panel.x + 354, panel.y + 356, 150, 48),
-            "CREATE",
-        ) {
-            self.create_document();
-        }
-    }
-
     fn render_editor(&mut self, framebuffer: &mut FrameBuffer) {
         let viewport = self.editor_viewport();
         let window_width = self.window_size.0.min(i32::MAX as u32) as i32;
@@ -552,6 +583,7 @@ impl App {
         let document = self.document.as_ref().expect("editor needs a document");
         self.canvas_view.render(document, framebuffer, viewport);
         let document_size = (document.width, document.height);
+        self.draw_pen_cursor(framebuffer);
         let (tool_radius, tool_opacity) = match self.active_tool {
             ActiveTool::Brush => (self.brush.settings.radius, self.brush.settings.opacity),
             ActiveTool::Eraser => (self.eraser.settings.radius, self.eraser.settings.opacity),
@@ -954,7 +986,11 @@ impl App {
             format!("PRESSURE {:.3}", sample.pressure),
             format!("TILT X {:.1} Y {:.1}", sample.tilt_x, sample.tilt_y),
             format!("ROTATION {:.0}", sample.rotation),
-            format!("CONTACT {} PROX {}", yes_no(sample.in_contact), yes_no(sample.in_proximity)),
+            format!(
+                "CONTACT {} PROX {}",
+                yes_no(sample.in_contact),
+                yes_no(sample.in_proximity)
+            ),
             format!(
                 "BTN1 {} BTN2 {}",
                 yes_no(sample.barrel_button_1),
@@ -966,110 +1002,27 @@ impl App {
         let panel = Rect::new(x - 8, y - 8, 190, (lines.len() as u32) * 10 + 14);
         framebuffer.fill_rect(panel, Color::rgba(12, 14, 18, 216));
         for (index, line) in lines.iter().enumerate() {
-            framebuffer.draw_text(
-                x,
-                y + index as i32 * 10,
-                line,
-                Color::rgb(235, 235, 235),
-                1,
-            );
+            framebuffer.draw_text(x, y + index as i32 * 10, line, Color::rgb(235, 235, 235), 1);
         }
     }
 
     fn render_color_picker(&mut self, framebuffer: &mut FrameBuffer) {
         self.ui.label(framebuffer, 20, 321, "COLOR");
-
-        let (_, saturation, value) = self.brush.settings.color.to_hsv();
-        let mut saturation = u32::from(saturation);
-        let mut value = u32::from(value);
-        let mut hue = self.picker_hue;
-        let color_changed = self.ui.color_square(
+        let rgb = self.brush.settings.color;
+        let mut color = Color::rgba(
+            rgb.red(),
+            rgb.green(),
+            rgb.blue(),
+            self.brush.settings.opacity,
+        );
+        if self.ui.color_picker(
             framebuffer,
-            COLOR_SQUARE,
+            COLOR_PICKER_BASE,
             Rect::new(8, 339, 104, 104),
-            hue,
-            &mut saturation,
-            &mut value,
-        );
-        self.ui.label(framebuffer, 20, 451, &format!("H {hue}"));
-        let hue_changed = self
-            .ui
-            .hue_slider(
-                framebuffer,
-                HUE_SLIDER,
-                Rect::new(8, 469, 104, 16),
-                &mut hue,
-            )
-            .changed;
-        if color_changed || hue_changed {
-            self.picker_hue = hue;
-            self.brush.settings.color = Color::from_hsv(hue, saturation as u8, value as u8);
-            self.rerender = true;
-        }
-
-        let mut red = u32::from(self.brush.settings.color.red());
-        let mut green = u32::from(self.brush.settings.color.green());
-        let mut blue = u32::from(self.brush.settings.color.blue());
-        let alpha = self.brush.settings.opacity;
-        let preview = Rect::new(20, 493, 80, 20);
-        framebuffer.fill_rect(preview, Color::rgb(224, 224, 224));
-        framebuffer.fill_rect(Rect::new(60, 493, 40, 10), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(Rect::new(20, 503, 40, 10), Color::rgb(176, 176, 176));
-        framebuffer.fill_rect(
-            preview,
-            Color::rgba(red as u8, green as u8, blue as u8, alpha),
-        );
-        framebuffer.draw_rect(preview, Color::rgb(225, 228, 232));
-        self.ui.label(
-            framebuffer,
-            12,
-            519,
-            &format!("{red:02X}{green:02X}{blue:02X}{alpha:02X}"),
-        );
-
-        self.ui.label(framebuffer, 8, 540, &format!("R{red}"));
-        let mut changed = self
-            .ui
-            .slider(
-                framebuffer,
-                RED_SLIDER,
-                Rect::new(60, 538, 52, 16),
-                &mut red,
-                255,
-                Color::rgb(210, 60, 60),
-            )
-            .changed;
-        self.ui.label(framebuffer, 8, 560, &format!("G{green}"));
-        changed |= self
-            .ui
-            .slider(
-                framebuffer,
-                GREEN_SLIDER,
-                Rect::new(60, 558, 52, 16),
-                &mut green,
-                255,
-                Color::rgb(55, 170, 90),
-            )
-            .changed;
-        self.ui.label(framebuffer, 8, 580, &format!("B{blue}"));
-        changed |= self
-            .ui
-            .slider(
-                framebuffer,
-                BLUE_SLIDER,
-                Rect::new(60, 578, 52, 16),
-                &mut blue,
-                255,
-                Color::rgb(60, 120, 220),
-            )
-            .changed;
-        if changed {
-            let color = Color::rgb(red as u8, green as u8, blue as u8);
-            let (hue, saturation, _) = color.to_hsv();
-            if saturation > 0 {
-                self.picker_hue = hue;
-            }
-            self.brush.settings.color = color;
+            &mut color,
+            &mut self.picker_hue,
+        ) {
+            self.brush.settings.color = Color::rgb(color.red(), color.green(), color.blue());
             self.rerender = true;
         }
     }
@@ -1163,13 +1116,22 @@ impl App {
                 &self.document.as_ref().unwrap().layers[index],
                 thumbnail,
             );
-            let display_name: String = name.chars().take(8).collect();
+            let name_width = row_rect.width.saturating_sub(102);
+            let name_scale = if FrameBuffer::measure_text(&name, 2) <= name_width {
+                2
+            } else {
+                1
+            };
+            let display_name: String = name
+                .chars()
+                .take((name_width / (6 * name_scale)) as usize)
+                .collect();
             framebuffer.draw_text(
                 row_rect.x + 94,
-                row_rect.y + 9,
+                row_rect.y + if name_scale == 2 { 9 } else { 12 },
                 &display_name,
                 Color::rgb(235, 238, 242),
-                2,
+                name_scale,
             );
             framebuffer.draw_text(
                 row_rect.x + 94,
@@ -1471,12 +1433,12 @@ impl App {
 
         let background = match self.background {
             Background::Transparent => Color::rgba(0, 0, 0, 0),
-            Background::White => Color::rgb(255, 255, 255),
+            Background::Color => self.background_color,
         };
-        let document = match Document::new(width, height, background) {
+        let document = match Document::with_background(width, height, background) {
             Ok(document) => document,
             Err(DocumentError::TooLarge) => {
-                self.validation_error = Some("MAX 64 MILLION PIXELS");
+                self.validation_error = Some("MAX 32 MILLION PIXELS");
                 return;
             }
             Err(DocumentError::AllocationFailed) => {
@@ -1518,26 +1480,53 @@ impl App {
         self.layer_name_edit_recorded = None;
         self.editor_notice = None;
         self.rerender = true;
-        self.end_tool();
+        // The active layer may already have changed. Never flush an unfinished
+        // stamp into the newly selected layer.
+        self.cancel_tool();
     }
 
-    fn canvas_pixel_at(&self, screen_x: i32, screen_y: i32) -> Option<(u32, u32)> {
-        if !self.editor_viewport().contains(screen_x, screen_y) {
+    fn brush_sample_at(&self, sample: PenSample) -> Option<BrushSample> {
+        let viewport = self.editor_viewport();
+        if !(sample.x >= viewport.x as f32
+            && sample.y >= viewport.y as f32
+            && sample.x < viewport.x as f32 + viewport.width as f32
+            && sample.y < viewport.y as f32 + viewport.height as f32)
+        {
             return None;
         }
         let document = self.document.as_ref()?;
-        let (x, y) = self
-            .canvas_view
-            .screen_to_canvas(screen_x as f32, screen_y as f32);
-        (x >= 0.0 && y >= 0.0 && x < document.width as f32 && y < document.height as f32)
-            .then_some((x as u32, y as u32))
+        let (x, y) = self.canvas_view.screen_to_canvas(sample.x, sample.y);
+        (x >= 0.0 && y >= 0.0 && x < document.width as f32 && y < document.height as f32).then_some(
+            BrushSample {
+                x,
+                y,
+                pressure: sample.pressure.clamp(0.0, 1.0),
+                tilt_x: sample.tilt_x,
+                tilt_y: sample.tilt_y,
+                rotation: sample.rotation,
+                timestamp: sample.timestamp,
+            },
+        )
     }
 
-    fn begin_tool(&mut self, screen_x: i32, screen_y: i32) {
-        let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
+    fn tool_for_sample(&self, sample: PenSample) -> ActiveTool {
+        if sample.tool == PenTool::Eraser {
+            ActiveTool::Eraser
+        } else {
+            self.active_tool
+        }
+    }
+
+    fn begin_tool(&mut self, pen: PenSample) {
+        if !pen.in_contact || self.tool_is_active() {
+            return;
+        }
+        let Some(sample) = self.brush_sample_at(pen) else {
             return;
         };
-        if self.active_tool == ActiveTool::Eyedropper {
+        let point = sample.pixel();
+        let tool = self.tool_for_sample(pen);
+        if tool == ActiveTool::Eyedropper {
             let color = self
                 .document
                 .as_ref()
@@ -1562,7 +1551,7 @@ impl App {
             self.brush.settings.color.blue(),
             self.brush.settings.opacity,
         );
-        let changes_document = match self.active_tool {
+        let changes_document = match tool {
             ActiveTool::Brush => self.brush.settings.opacity > 0,
             ActiveTool::Eraser => self.eraser.settings.opacity > 0,
             ActiveTool::Bucket => {
@@ -1581,16 +1570,20 @@ impl App {
         }
         self.checkpoint();
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
-        match self.active_tool {
-            ActiveTool::Brush => self.brush.pointer_down(pixels, point),
-            ActiveTool::Eraser => self.eraser.pointer_down(pixels, point),
+        match tool {
+            ActiveTool::Brush => self.brush.pointer_down(pixels, sample),
+            ActiveTool::Eraser => self.eraser.pointer_down(pixels, sample),
             ActiveTool::Bucket => pixels.flood_fill(point.0, point.1, fill_color),
             ActiveTool::Eyedropper => {}
         }
+        self.stroke_tool = matches!(tool, ActiveTool::Brush | ActiveTool::Eraser).then_some(tool);
     }
 
-    fn move_tool(&mut self, screen_x: i32, screen_y: i32) {
-        let Some(point) = self.canvas_pixel_at(screen_x, screen_y) else {
+    fn move_tool(&mut self, pen: PenSample) {
+        if !pen.in_contact || !self.tool_is_active() {
+            return;
+        }
+        let Some(sample) = self.brush_sample_at(pen) else {
             self.break_tool_segment();
             return;
         };
@@ -1599,35 +1592,72 @@ impl App {
             return;
         }
         let pixels = &mut self.document.as_mut().unwrap().active_layer_mut().pixels;
-        match self.active_tool {
-            ActiveTool::Brush => self.brush.pointer_move(pixels, point),
-            ActiveTool::Eraser => self.eraser.pointer_move(pixels, point),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
+        match self.stroke_tool {
+            Some(ActiveTool::Brush) => self.brush.pointer_move(pixels, sample),
+            Some(ActiveTool::Eraser) => self.eraser.pointer_move(pixels, sample),
+            _ => {}
         }
     }
 
     fn tool_is_active(&self) -> bool {
-        match self.active_tool {
-            ActiveTool::Brush => self.brush.is_active(),
-            ActiveTool::Eraser => self.eraser.is_active(),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => false,
-        }
+        self.brush.is_active() || self.eraser.is_active()
     }
 
     fn end_tool(&mut self) {
-        match self.active_tool {
-            ActiveTool::Brush => self.brush.pointer_up(),
-            ActiveTool::Eraser => self.eraser.pointer_up(),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
+        if let Some(document) = self.document.as_mut() {
+            let pixels = &mut document.active_layer_mut().pixels;
+            self.brush.pointer_up(pixels);
+            self.eraser.pointer_up(pixels);
         }
+        self.cancel_tool();
+    }
+
+    fn cancel_tool(&mut self) {
+        self.brush.cancel();
+        self.eraser.cancel();
+        self.stroke_tool = None;
     }
 
     fn break_tool_segment(&mut self) {
-        match self.active_tool {
-            ActiveTool::Brush => self.brush.break_segment(),
-            ActiveTool::Eraser => self.eraser.break_segment(),
-            ActiveTool::Eyedropper | ActiveTool::Bucket => {}
+        if let Some(document) = self.document.as_mut() {
+            let pixels = &mut document.active_layer_mut().pixels;
+            self.brush.break_segment(pixels);
+            self.eraser.break_segment(pixels);
         }
+    }
+
+    fn draw_pen_cursor(&self, framebuffer: &mut FrameBuffer) {
+        let Some((x, y, radius)) = self.pen_cursor() else {
+            return;
+        };
+        let clip = self.editor_viewport();
+        framebuffer.draw_circle_outline(x, y, radius + 1.0, Color::rgb(20, 20, 20), clip);
+        framebuffer.draw_circle_outline(x, y, radius, Color::rgb(245, 245, 245), clip);
+    }
+
+    fn pen_cursor(&self) -> Option<(f32, f32, f32)> {
+        let pen = self
+            .last_pen_sample
+            .filter(|p| self.pointer_is_pen && p.in_proximity)?;
+        self.brush_sample_at(pen)?;
+        let pressure = if pen.in_contact { pen.pressure } else { 1.0 };
+        let radius = match self
+            .stroke_tool
+            .unwrap_or_else(|| self.tool_for_sample(pen))
+        {
+            ActiveTool::Brush => self
+                .brush
+                .settings
+                .dynamics
+                .radius(self.brush.settings.radius, pressure),
+            ActiveTool::Eraser => self
+                .eraser
+                .settings
+                .dynamics
+                .radius(self.eraser.settings.radius, pressure),
+            _ => return None,
+        };
+        Some((pen.x, pen.y, radius * self.canvas_view.zoom))
     }
 
     fn editor_viewport(&self) -> Rect {
@@ -1673,13 +1703,6 @@ impl App {
             .layer_scroll
             .min(document.layers.len().saturating_sub(capacity));
     }
-
-    fn window_center(&self) -> (i32, i32) {
-        (
-            self.window_size.0.min(i32::MAX as u32) as i32 / 2,
-            self.window_size.1.min(i32::MAX as u32) as i32 / 2,
-        )
-    }
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -1700,6 +1723,426 @@ fn pen_tool_name(tool: PenTool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tablet_app() -> App {
+        let mut app = App::new();
+        app.window_size = (1000, 700);
+        app.state = AppState::Editor;
+        app.document = Some(Document::new(120, 80, Color::rgba(0, 0, 0, 0)).unwrap());
+        app.canvas_view = CanvasView {
+            zoom: 2.0,
+            offset_x: 200.0,
+            offset_y: 100.0,
+        };
+        app.saved_revision = Some(app.current_revision);
+        app
+    }
+
+    fn pen_at(app: &App, x: f32, y: f32, pressure: f32, contact: bool) -> PenSample {
+        let (x, y) = app.canvas_view.canvas_to_screen(x, y);
+        PenSample {
+            pointer_id: 7,
+            pressure,
+            ..PenSample::mouse(x, y, contact)
+        }
+    }
+
+    #[test]
+    fn pen_and_mouse_share_the_same_full_pressure_stroke_and_undo() {
+        fn draw(with_pen: bool) -> App {
+            let mut app = tablet_app();
+            app.brush.settings.opacity = 90;
+            let a = pen_at(&app, 10.5, 20.5, 1.0, true);
+            let b = pen_at(&app, 70.5, 30.5, 1.0, true);
+            if with_pen {
+                app.handle_event(Event::PenDown(a));
+                app.handle_event(Event::PenMove(b));
+                app.handle_event(Event::PenUp(PenSample {
+                    pressure: 0.0,
+                    in_contact: false,
+                    ..b
+                }));
+            } else {
+                app.handle_event(Event::MouseMove {
+                    x: a.x as i32,
+                    y: a.y as i32,
+                });
+                app.handle_event(Event::MouseDown {
+                    button: MouseButton::Left,
+                });
+                app.handle_event(Event::MouseMove {
+                    x: b.x as i32,
+                    y: b.y as i32,
+                });
+                app.handle_event(Event::MouseUp {
+                    button: MouseButton::Left,
+                });
+            }
+            app
+        }
+        let mouse = draw(false);
+        let mut pen = draw(true);
+        let expected = mouse
+            .document
+            .as_ref()
+            .unwrap()
+            .active_layer()
+            .pixels
+            .pixels
+            .clone();
+        assert_eq!(
+            pen.document.as_ref().unwrap().active_layer().pixels.pixels,
+            expected
+        );
+        assert_eq!(pen.undo_history.len(), 1);
+        assert!(pen.has_unsaved_changes());
+        pen.undo();
+        assert!(!pen.has_unsaved_changes());
+        assert!(
+            pen.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .pixels
+                .iter()
+                .all(|&p| p == 0)
+        );
+        pen.redo();
+        assert_eq!(
+            pen.document.as_ref().unwrap().active_layer().pixels.pixels,
+            expected
+        );
+    }
+
+    #[test]
+    fn pen_coordinates_keep_fractional_precision_through_zoom_and_pan() {
+        let mut app = tablet_app();
+        app.canvas_view.zoom = 1.25;
+        app.canvas_view.offset_x = 203.25;
+        let mut pen = pen_at(&app, 12.25, 18.75, 0.37, true);
+        pen.tilt_x = -35.0;
+        pen.tilt_y = 12.0;
+        pen.rotation = 87.0;
+        pen.timestamp = 1234;
+        let sample = app.brush_sample_at(pen).unwrap();
+        assert_eq!((sample.x, sample.y), (12.25, 18.75));
+        assert_eq!(
+            (
+                sample.pressure,
+                sample.tilt_x,
+                sample.tilt_y,
+                sample.rotation,
+                sample.timestamp
+            ),
+            (0.37, -35.0, 12.0, 87.0, 1234)
+        );
+        app.brush.settings.radius = 0;
+        app.handle_event(Event::PenDown(pen));
+        let pixels = &app.document.as_ref().unwrap().active_layer().pixels;
+        // The center is a quarter-pixel left/below the pixel center. Coverage
+        // must spread in those directions, retaining the fractional position.
+        assert!((1..94).contains(&pixels.get_pixel(12, 18).unwrap().alpha()));
+        assert!(pixels.get_pixel(11, 18).unwrap().alpha() > 0);
+        assert!(pixels.get_pixel(12, 19).unwrap().alpha() > 0);
+        assert_eq!(pixels.get_pixel(13, 18).unwrap().alpha(), 0);
+        assert_eq!(pixels.get_pixel(12, 17).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn pen_cursor_keeps_fractional_center_and_effective_radius_at_every_zoom() {
+        let mut app = tablet_app();
+        app.brush.settings.radius = 4; // Diameter 9, diameter 4.95 at half pressure.
+        app.eraser.settings.radius = 8;
+        app.pointer_is_pen = true;
+        for zoom in [0.25, 1.0, 1.25, 8.0] {
+            app.canvas_view.zoom = zoom;
+            let pen = pen_at(&app, 12.25, 18.75, 0.5, true);
+            app.last_pen_sample = Some(pen);
+            let (x, y, radius) = app.pen_cursor().unwrap();
+            assert_eq!((x, y), (pen.x, pen.y));
+            assert!((radius - 2.475 * zoom).abs() < 0.00001);
+            app.last_pen_sample = Some(PenSample {
+                in_contact: false,
+                ..pen
+            });
+            assert_eq!(app.pen_cursor().unwrap().2, 4.5 * zoom);
+            app.last_pen_sample = Some(PenSample {
+                tool: PenTool::Eraser,
+                ..pen
+            });
+            assert!((app.pen_cursor().unwrap().2 - 4.675 * zoom).abs() < 0.00001);
+        }
+        app.brush.settings.radius = 0;
+        app.canvas_view.zoom = 0.25;
+        app.last_pen_sample = Some(pen_at(&app, 12.5, 18.5, 1.0, true));
+        assert_eq!(app.pen_cursor().unwrap().2, 0.125);
+    }
+
+    #[test]
+    fn hover_and_moves_without_a_down_do_not_paint_and_zero_pressure_is_still_contact() {
+        let mut app = tablet_app();
+        let mut pen = pen_at(&app, 20.0, 20.0, 0.8, false);
+        app.handle_event(Event::PenProximityIn(pen));
+        app.handle_event(Event::PenMove(pen));
+        pen.in_contact = true;
+        app.handle_event(Event::PenMove(pen));
+        assert!(app.undo_history.is_empty());
+        assert!(!app.has_unsaved_changes());
+        pen.pressure = 0.0;
+        app.handle_event(Event::PenDown(pen));
+        assert!(app.tool_is_active());
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(20, 20)
+                .unwrap()
+                .alpha(),
+            0
+        );
+        pen.x += 40.0;
+        pen.pressure = 1.0;
+        app.handle_event(Event::PenMove(pen));
+        assert_eq!(app.undo_history.len(), 1);
+        assert!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(35, 20)
+                .unwrap()
+                .alpha()
+                > 0
+        );
+    }
+
+    #[test]
+    fn pen_release_proximity_loss_capture_loss_and_focus_loss_stop_drawing() {
+        for ending in 0..5 {
+            let mut app = tablet_app();
+            app.brush.settings.radius = 0;
+            let pen = pen_at(&app, 20.5, 20.5, 1.0, true);
+            app.handle_event(Event::PenDown(pen));
+            let up = PenSample {
+                in_contact: false,
+                pressure: 0.0,
+                ..pen
+            };
+            app.handle_event(match ending {
+                0 => Event::PenUp(up),
+                1 => Event::PenProximityOut { pointer_id: 7 },
+                2 => Event::PenCancelled { pointer_id: 7 },
+                3 => Event::FocusLost,
+                _ => Event::PenMove(up),
+            });
+            let later = pen_at(&app, 80.0, 20.0, 1.0, true);
+            app.handle_event(Event::PenMove(later));
+            assert!(!app.tool_is_active());
+            assert_eq!(app.pointer_contact, None);
+            let pixels = &app.document.as_ref().unwrap().active_layer().pixels;
+            assert_eq!(pixels.get_pixel(20, 20).unwrap().alpha(), 255);
+            assert_eq!(pixels.get_pixel(60, 20).unwrap().alpha(), 0);
+        }
+    }
+
+    #[test]
+    fn a_stroke_ignores_other_pointers_and_mouse_remains_available_after_release() {
+        let mut app = tablet_app();
+        app.brush.settings.radius = 0;
+        let a = pen_at(&app, 20.5, 20.5, 1.0, true);
+        let b = pen_at(&app, 80.5, 20.5, 1.0, true);
+        app.handle_event(Event::PenDown(a));
+        app.handle_event(Event::PenDown(a));
+        app.handle_event(Event::PenUp(PenSample { pointer_id: 8, ..a }));
+        app.handle_event(Event::PenCancelled { pointer_id: 8 });
+        app.handle_event(Event::MouseMove {
+            x: b.x as i32,
+            y: b.y as i32,
+        });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        assert!(app.tool_is_active());
+        assert_eq!(app.undo_history.len(), 1);
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(60, 20)
+                .unwrap()
+                .alpha(),
+            0
+        );
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            pressure: 0.0,
+            ..a
+        }));
+        app.handle_event(Event::MouseMove {
+            x: b.x as i32,
+            y: b.y as i32,
+        });
+        app.handle_event(Event::MouseDown {
+            button: MouseButton::Left,
+        });
+        app.handle_event(Event::PenMove(a));
+        app.handle_event(Event::MouseUp {
+            button: MouseButton::Left,
+        });
+        assert_eq!(app.undo_history.len(), 2);
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(80, 20)
+                .unwrap()
+                .alpha(),
+            255
+        );
+    }
+
+    #[test]
+    fn inverted_pen_erases_temporarily_and_preserves_the_selected_tool() {
+        let mut app = tablet_app();
+        app.document = Some(Document::new(120, 80, Color::rgb(240, 240, 240)).unwrap());
+        app.active_tool = ActiveTool::Eyedropper;
+        app.eraser.settings.radius = 0;
+        let mut pen = pen_at(&app, 20.5, 20.5, 0.5, true);
+        pen.tool = PenTool::Eraser;
+        app.handle_event(Event::PenDown(pen));
+        assert_eq!(app.stroke_tool, Some(ActiveTool::Eraser));
+        assert_eq!(app.active_tool, ActiveTool::Eyedropper);
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(20, 20)
+                .unwrap()
+                .alpha(),
+            127
+        );
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            pressure: 0.0,
+            ..pen
+        }));
+        assert_eq!(app.stroke_tool, None);
+        assert_eq!(app.active_tool, ActiveTool::Eyedropper);
+        app.undo();
+        assert_eq!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .get_pixel(20, 20)
+                .unwrap()
+                .alpha(),
+            255
+        );
+    }
+
+    #[test]
+    fn pen_can_select_tools_and_drag_controls_without_starting_a_canvas_stroke() {
+        let mut app = tablet_app();
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700).unwrap();
+        let pen = PenSample {
+            pointer_id: 7,
+            ..PenSample::mouse(50.0, 118.0, true)
+        };
+        app.handle_event(Event::PenDown(pen));
+        app.render(&mut framebuffer);
+        assert_eq!(app.active_tool, ActiveTool::Eraser);
+        let canvas = pen_at(&app, 20.0, 20.0, 1.0, true);
+        app.handle_event(Event::PenMove(canvas));
+        assert!(!app.tool_is_active());
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            pressure: 0.0,
+            ..canvas
+        }));
+        app.render(&mut framebuffer);
+        let down = PenSample {
+            x: 8.0,
+            y: 262.0,
+            ..pen
+        };
+        app.handle_event(Event::PenDown(down));
+        app.render(&mut framebuffer);
+        assert_eq!(app.eraser.settings.radius, 0);
+        let right = PenSample { x: 111.0, ..down };
+        app.handle_event(Event::PenMove(right));
+        app.render(&mut framebuffer);
+        assert_eq!(app.eraser.settings.radius, 127);
+        app.handle_event(Event::PenCancelled { pointer_id: 7 });
+        app.handle_event(Event::PenMove(PenSample {
+            in_contact: false,
+            ..down
+        }));
+        app.render(&mut framebuffer);
+        assert_eq!(app.eraser.settings.radius, 127);
+        assert!(app.undo_history.is_empty());
+    }
+
+    #[test]
+    fn quick_pen_taps_still_activate_the_ui_after_leaving_proximity() {
+        let mut app = tablet_app();
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700).unwrap();
+        let pen = PenSample {
+            pointer_id: 7,
+            ..PenSample::mouse(50.0, 118.0, true)
+        };
+        app.handle_event(Event::PenDown(pen));
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            pressure: 0.0,
+            ..pen
+        }));
+        app.handle_event(Event::PenProximityOut { pointer_id: 7 });
+        app.render(&mut framebuffer);
+        assert_eq!(app.active_tool, ActiveTool::Eraser);
+        assert!(app.undo_history.is_empty());
+    }
+
+    #[test]
+    fn a_layer_switch_cannot_flush_a_pending_stamp_onto_the_new_layer() {
+        let mut app = tablet_app();
+        let a = pen_at(&app, 20.0, 20.0, 1.0, true);
+        let b = pen_at(&app, 21.5, 20.0, 1.0, true);
+        app.handle_event(Event::PenDown(a));
+        app.handle_event(Event::PenMove(b));
+        app.document.as_mut().unwrap().add_layer().unwrap();
+        app.layer_changed();
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            ..b
+        }));
+        assert!(
+            app.document
+                .as_ref()
+                .unwrap()
+                .active_layer()
+                .pixels
+                .pixels
+                .iter()
+                .all(|&p| p == 0)
+        );
+    }
 
     #[test]
     fn validates_dimensions_before_entering_the_editor() {
@@ -1723,6 +2166,12 @@ mod tests {
         assert_eq!((document.width, document.height), (640, 480));
         assert_eq!(
             document.active_layer().pixels.get_pixel(0, 0),
+            Some(Color::rgba(0, 0, 0, 0))
+        );
+        assert_eq!(document.active_layer, 1);
+        assert_eq!(document.layers[0].name, "BACKGROUND");
+        assert_eq!(
+            document.layers[0].pixels.get_pixel(0, 0),
             Some(Color::rgb(255, 255, 255))
         );
 
@@ -1763,7 +2212,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(1, 1, 0, Color::rgb(255, 0, 0));
+            .stamp_circle(1.5, 1.5, 0.5, Color::rgb(255, 0, 0));
         let expected = document
             .composite_pixel(1, 1, Color::rgba(0, 0, 0, 0))
             .unwrap();
@@ -1773,7 +2222,7 @@ mod tests {
         app.active_tool = ActiveTool::Eyedropper;
 
         let (x, y) = app.canvas_view.canvas_to_screen(1.0, 1.0);
-        app.begin_tool(x as i32, y as i32);
+        app.begin_tool(PenSample::mouse(x, y, true));
 
         assert_eq!(
             app.brush.settings.color,
@@ -1796,7 +2245,7 @@ mod tests {
             .unwrap()
             .active_layer_mut()
             .pixels
-            .stamp_circle(1, 1, 0, black);
+            .stamp_circle(1.5, 1.5, 0.5, black);
 
         app.handle_event(Event::KeyDown { key: Key::Control });
         app.handle_event(Event::KeyDown {
@@ -1833,7 +2282,7 @@ mod tests {
             .unwrap()
             .active_layer_mut()
             .pixels
-            .stamp_circle(1, 1, 0, red);
+            .stamp_circle(1.5, 1.5, 0.5, red);
         app.handle_event(Event::KeyDown {
             key: Key::Letter('Y'),
         });

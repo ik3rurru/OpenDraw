@@ -169,7 +169,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(0, 0, 0, Color::rgba(10, 20, 30, 40));
+            .stamp_circle(0.5, 0.5, 0.5, Color::rgba(10, 20, 30, 40));
         let mut png = Vec::new();
         write(&document, &mut png).unwrap();
         assert_eq!(&png[..8], SIGNATURE);

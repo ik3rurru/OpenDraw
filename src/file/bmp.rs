@@ -45,7 +45,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(0, 0, 0, Color::rgba(255, 0, 0, 128));
+            .stamp_circle(0.5, 0.5, 0.5, Color::rgba(255, 0, 0, 128));
         let mut bmp = Vec::new();
         write(&document, &mut bmp).unwrap();
 

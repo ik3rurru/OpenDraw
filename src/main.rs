@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod antialiasing_validation;
 mod app;
 mod document;
 mod file;

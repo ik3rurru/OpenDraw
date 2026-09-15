@@ -24,6 +24,12 @@ struct WindowState {
     // Reused across WM_POINTERUPDATE batches so coalesced samples never
     // allocate per message.
     pen_history: Vec<POINTER_PEN_INFO>,
+    // Retain ownership even if a later native query fails. A consumed pen
+    // sequence must never switch back to emulated mouse messages halfway.
+    pen_pointers: Vec<u32>,
+    // Likewise, a pointer that began through DefWindowProc must finish there,
+    // even if a later GetPointerType call could identify it as a pen.
+    legacy_pointers: Vec<u32>,
     error: Option<io::Error>,
     destroyed: bool,
 }
@@ -492,15 +498,26 @@ unsafe extern "system" fn window_proc(
             });
             0
         }
-        WM_POINTERENTER | WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERLEAVE
+        WM_POINTERENTER
+        | WM_POINTERDOWN
+        | WM_POINTERUPDATE
+        | WM_POINTERUP
+        | WM_POINTERLEAVE
+        | WM_POINTERCAPTURECHANGED
             if !state.is_null() =>
         {
-            push_pen_events(unsafe { &mut *state }, window, message, wparam);
-            // The editor still runs entirely on mouse input, so pen messages must
-            // reach DefWindowProc to be promoted to the emulated WM_MOUSE* messages
-            // (UI clicks and strokes). Suppress that promotion only when the brush
-            // engine consumes PenSamples directly (PEN-004), or every pen stroke
-            // would draw twice.
+            if push_pen_events(unsafe { &mut *state }, window, message, wparam) {
+                // Both the UI and tools consume PenSample directly. Returning
+                // zero prevents DefWindowProc from generating duplicate mouse
+                // clicks/strokes; mouse and touch keep their default handling.
+                // https://learn.microsoft.com/en-us/windows/win32/inputmsg/wm-pointerdown
+                0
+            } else {
+                unsafe { DefWindowProcW(window, message, wparam, lparam) }
+            }
+        }
+        WM_KILLFOCUS if !state.is_null() => {
+            unsafe { &mut *state }.events.push_back(Event::FocusLost);
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_KEYDOWN if !state.is_null() => {
@@ -586,30 +603,58 @@ fn pointer_id(wparam: WPARAM) -> u32 {
 
 /// Translates WM_POINTER* messages into common pen events. Non-pen pointers
 /// (mouse/touch) produce nothing and keep their default behavior.
-fn push_pen_events(state: &mut WindowState, window: HWND, message: UINT, wparam: WPARAM) {
+fn push_pen_events(state: &mut WindowState, window: HWND, message: UINT, wparam: WPARAM) -> bool {
     let pointer_id = pointer_id(wparam);
+    let terminal = matches!(message, WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED)
+        || (wparam >> 16) as u32 & POINTER_FLAG_CANCELED != 0;
+    if state.legacy_pointers.contains(&pointer_id) {
+        if terminal {
+            state.legacy_pointers.retain(|&id| id != pointer_id);
+        }
+        return false;
+    }
     // SAFETY: pointer_id comes from the message's wParam; every out-pointer is a
     // valid stack local that outlives each synchronous call, and the calls only
     // fill POD data, retaining no references afterwards.
     unsafe {
         let mut pointer_type = 0;
-        if GetPointerType(pointer_id, &mut pointer_type) == 0 || pointer_type != PT_PEN {
-            return;
+        if !state.pen_pointers.contains(&pointer_id) {
+            if GetPointerType(pointer_id, &mut pointer_type) == 0 || pointer_type != PT_PEN {
+                if !terminal {
+                    state.legacy_pointers.push(pointer_id);
+                }
+                return false;
+            }
+            state.pen_pointers.push(pointer_id);
+        }
+        if message == WM_POINTERCAPTURECHANGED || (wparam >> 16) as u32 & POINTER_FLAG_CANCELED != 0
+        {
+            state.events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            state.pen_pointers.retain(|&id| id != pointer_id);
+            return true;
         }
         if message == WM_POINTERLEAVE {
             state.events.push_back(Event::PenProximityOut {
                 pointer_id: u64::from(pointer_id),
             });
-            return;
+            state.pen_pointers.retain(|&id| id != pointer_id);
+            return true;
         }
 
-        let Some(origin) = client_origin(window) else { return };
+        let Some(origin) = client_origin(window) else {
+            state.events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            return true;
+        };
 
         if message == WM_POINTERUPDATE {
             // Pen digitizers sample faster than the message queue delivers, so
             // Windows coalesces samples into one WM_POINTERUPDATE. The history
             // call returns every coalesced sample, newest first.
-            let mut capacity = 16_usize;
+            let mut capacity = state.pen_history.capacity().max(16);
             loop {
                 state.pen_history.clear();
                 state
@@ -633,33 +678,50 @@ fn push_pen_events(state: &mut WindowState, window: HWND, message: UINT, wparam:
                     push_coalesced_moves(
                         &mut state.events,
                         pointer_id,
-                        origin,
                         &state.pen_history[..count as usize],
+                        |point| pen_client_location(window, point, origin),
                     );
+                    return true;
                 }
-                return;
+                // Some drivers cannot supply history for every message. Keep
+                // the current sample via GetPointerPenInfo below in that case.
+                break;
             }
         }
 
         let mut pen_info = POINTER_PEN_INFO::default();
         if GetPointerPenInfo(pointer_id, &mut pen_info) == 0 {
-            return;
+            state.events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            return true;
         }
-        let sample = pen_sample_from(
-            pointer_id,
-            &pen_info,
-            client_location(pen_info.pointer_info.pt_pixel_location, origin),
-        );
+        if pen_info.pointer_info.pointer_flags & POINTER_FLAG_CANCELED != 0 {
+            state.events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            return true;
+        }
+        let Some(location) =
+            pen_client_location(window, pen_info.pointer_info.pt_pixel_location, origin)
+        else {
+            state.events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            return true;
+        };
+        let sample = pen_sample_from(pointer_id, &pen_info, location);
         state.events.push_back(match message {
             WM_POINTERENTER => Event::PenProximityIn(sample),
             WM_POINTERDOWN => Event::PenDown(sample),
+            WM_POINTERUPDATE => Event::PenMove(sample),
             _ => Event::PenUp(sample),
         });
     }
+    true
 }
 
-/// Screen origin of the client area: subtracting it converts screen coordinates
-/// into client coordinates, and it is constant for one message batch.
+/// Logical screen origin of the client area, constant for one message batch.
 fn client_origin(window: HWND) -> Option<POINT> {
     let mut origin = POINT { x: 0, y: 0 };
     // SAFETY: origin is a valid stack local alive for the synchronous call.
@@ -673,21 +735,40 @@ fn client_location(location: POINT, origin: POINT) -> POINT {
     }
 }
 
+fn pen_client_location(window: HWND, mut physical: POINT, origin: POINT) -> Option<POINT> {
+    // POINTER_INFO positions use physical pixels. The framebuffer and mouse
+    // use this window's logical coordinates, which differ with DPI scaling.
+    // Convert before subtracting the client origin, including for history.
+    // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-physicaltologicalpointforpermonitordpi
+    // SAFETY: physical is a live POINT; the synchronous API retains no pointer.
+    (unsafe { PhysicalToLogicalPointForPerMonitorDPI(window, &mut physical) } != 0)
+        .then(|| client_location(physical, origin))
+}
+
 /// Emits one PenMove per coalesced sample. GetPointerPenInfoHistory returns the
 /// newest sample first; strokes must process the oldest first or they run
 /// backwards, so the slice is reversed into chronological order.
 fn push_coalesced_moves(
     events: &mut VecDeque<Event>,
     pointer_id: u32,
-    origin: POINT,
     newest_first: &[POINTER_PEN_INFO],
+    mut to_client: impl FnMut(POINT) -> Option<POINT>,
 ) {
     for pen_info in newest_first.iter().rev() {
-        let location = client_location(pen_info.pointer_info.pt_pixel_location, origin);
+        if pen_info.pointer_info.pointer_flags & POINTER_FLAG_CANCELED != 0 {
+            events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            break;
+        }
+        let Some(location) = to_client(pen_info.pointer_info.pt_pixel_location) else {
+            events.push_back(Event::PenCancelled {
+                pointer_id: u64::from(pointer_id),
+            });
+            break;
+        };
         events.push_back(Event::PenMove(pen_sample_from(
-            pointer_id,
-            pen_info,
-            location,
+            pointer_id, pen_info, location,
         )));
     }
 }
@@ -728,9 +809,11 @@ fn pen_sample_from(pointer_id: u32, pen_info: &POINTER_PEN_INFO, client: POINT) 
         distance: 0.0,
         in_contact,
         in_proximity: flags & POINTER_FLAG_INRANGE != 0,
-        barrel_button_1: flags & POINTER_FLAG_FIRSTBUTTON != 0,
-        barrel_button_2: flags & POINTER_FLAG_SECONDBUTTON != 0,
-        tool: if pen_info.pen_flags & PEN_FLAGS_INVERTED != 0 {
+        barrel_button_1: pen_info.pen_flags & PEN_FLAG_BARREL != 0,
+        // Pointer Input exposes one barrel button; do not invent a second one
+        // from the primary/secondary action flags in POINTER_INFO.
+        barrel_button_2: false,
+        tool: if pen_info.pen_flags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER) != 0 {
             PenTool::Eraser
         } else {
             PenTool::Pen
@@ -858,9 +941,8 @@ mod tests {
     #[test]
     fn translates_pen_pointer_input_into_pen_samples() {
         let mut info = POINTER_PEN_INFO::default();
-        info.pointer_info.pointer_flags = POINTER_FLAG_INRANGE
-            | POINTER_FLAG_INCONTACT
-            | POINTER_FLAG_FIRSTBUTTON;
+        info.pointer_info.pointer_flags =
+            POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_FIRSTBUTTON;
         info.pointer_info.performance_count = 42;
         info.pen_mask = PEN_MASK_PRESSURE | PEN_MASK_ROTATION | PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
         info.pressure = 512;
@@ -879,7 +961,7 @@ mod tests {
         assert_eq!(sample.timestamp, 42);
         assert!(sample.in_contact);
         assert!(sample.in_proximity);
-        assert!(sample.barrel_button_1);
+        assert!(!sample.barrel_button_1);
         assert!(!sample.barrel_button_2);
         assert_eq!(sample.tool, PenTool::Pen);
     }
@@ -895,17 +977,216 @@ mod tests {
 
         let mut info = POINTER_PEN_INFO::default();
         info.pointer_info.pointer_flags = POINTER_FLAG_INCONTACT;
-        info.pen_flags = PEN_FLAGS_INVERTED;
+        info.pen_flags = PEN_FLAG_INVERTED;
         let drawing = pen_sample_from(1, &info, POINT::default());
         assert_eq!(drawing.pressure, 1.0);
         assert_eq!(drawing.tool, PenTool::Eraser);
     }
 
     #[test]
+    fn windows_sdk_pen_packets_produce_visible_pressure_strokes() {
+        use crate::{
+            document::Document,
+            graphics::Color,
+            tools::{BrushSample, BrushTool, Tool},
+        };
+
+        // These bytes come from the C Windows SDK types, never from our Rust
+        // declarations. See tests/fixtures/windows_pen_fixture.c to regenerate.
+        #[cfg(target_pointer_width = "64")]
+        let native_bytes = include_bytes!("../../../tests/fixtures/windows-pen-x64.bin");
+        #[cfg(target_pointer_width = "32")]
+        let native_bytes = include_bytes!("../../../tests/fixtures/windows-pen-x86.bin");
+        let native_stride = native_bytes.len() / 2;
+        assert_eq!(
+            size_of::<POINTER_PEN_INFO>(),
+            native_stride,
+            "the Win32 API would overwrite an undersized pen buffer"
+        );
+
+        let newest_first: Vec<POINTER_PEN_INFO> = native_bytes
+            .chunks_exact(native_stride)
+            .map(|bytes| {
+                // SAFETY: The size assertion above verifies a complete native
+                // record. All fields are integers or raw handles (never
+                // dereferenced here); read_unaligned handles the byte buffer.
+                unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<POINTER_PEN_INFO>()) }
+            })
+            .collect();
+        assert_eq!(newest_first[0].pointer_info.h_target as usize, 0x40506);
+        assert_eq!(newest_first[0].pointer_info.history_count, 2);
+        assert_eq!(newest_first[0].pointer_info.input_data, -9);
+        let mut events = VecDeque::new();
+        push_coalesced_moves(&mut events, 7, &newest_first, |point| {
+            Some(client_location(point, POINT { x: 200, y: 100 }))
+        });
+        let mut samples = Vec::new();
+        for event in events {
+            let Event::PenMove(sample) = event else {
+                panic!("expected a pen move")
+            };
+            assert!(sample.in_contact && sample.in_proximity);
+            assert!(!sample.barrel_button_1 && !sample.barrel_button_2);
+            assert_eq!(sample.tool, PenTool::Pen);
+            assert_eq!(
+                (sample.tilt_x, sample.tilt_y, sample.rotation),
+                (-23.0, 11.0, 90.0)
+            );
+            samples.push(sample);
+        }
+        assert_eq!(
+            (
+                samples[0].x,
+                samples[0].y,
+                samples[0].pressure,
+                samples[0].timestamp
+            ),
+            (10.0, 20.0, 0.25, 1000)
+        );
+        assert_eq!(
+            (
+                samples[1].x,
+                samples[1].y,
+                samples[1].pressure,
+                samples[1].timestamp
+            ),
+            (50.0, 30.0, 1.0, 1001)
+        );
+
+        let to_brush = |sample: PenSample| BrushSample {
+            x: sample.x,
+            y: sample.y,
+            pressure: sample.pressure,
+            tilt_x: sample.tilt_x,
+            tilt_y: sample.tilt_y,
+            rotation: sample.rotation,
+            timestamp: sample.timestamp,
+        };
+        let mut document = Document::new(80, 60, Color::rgba(0, 0, 0, 0)).unwrap();
+        let pixels = &mut document.active_layer_mut().pixels;
+        let mut brush = BrushTool::default();
+        brush.pointer_down(pixels, to_brush(samples[0]));
+        assert_eq!(pixels.get_pixel(10, 20).unwrap().alpha(), 64);
+        brush.pointer_move(pixels, to_brush(samples[1]));
+        brush.pointer_up(pixels);
+        assert!(pixels.get_pixel(30, 25).unwrap().alpha() > 0);
+        assert_eq!(pixels.get_pixel(50, 30).unwrap().alpha(), 255);
+    }
+
+    #[test]
+    fn native_barrel_and_eraser_bits_are_independent_of_tip_contact() {
+        let mut info = POINTER_PEN_INFO::default();
+        info.pointer_info.pointer_flags = 0x16; // In range, contact, primary action.
+        let tip = pen_sample_from(7, &info, POINT::default());
+        assert!(!tip.barrel_button_1);
+        assert_eq!(tip.tool, PenTool::Pen);
+        info.pen_flags = 0x01; // PEN_FLAG_BARREL per the Windows SDK.
+        let barrel = pen_sample_from(7, &info, POINT::default());
+        assert!(barrel.barrel_button_1);
+        assert!(!barrel.barrel_button_2);
+        assert_eq!(barrel.tool, PenTool::Pen);
+        for flags in [0x02, 0x04] {
+            // Inverted pen or eraser button.
+            info.pen_flags = flags;
+            let eraser = pen_sample_from(7, &info, POINT::default());
+            assert_eq!(eraser.tool, PenTool::Eraser);
+            assert!(!eraser.barrel_button_1);
+        }
+    }
+
+    #[test]
+    fn capture_loss_of_a_known_pen_is_consumed_without_a_successful_native_query() {
+        let mut state = WindowState::default();
+        state.pen_pointers.push(7);
+        // A null HWND cannot provide pen data. Capture loss must still cancel
+        // our known contact and must not be promoted to a mouse sequence.
+        assert!(push_pen_events(
+            &mut state,
+            ptr::null_mut(),
+            WM_POINTERCAPTURECHANGED,
+            7
+        ));
+        assert_eq!(
+            state.events.pop_front(),
+            Some(Event::PenCancelled { pointer_id: 7 })
+        );
+        assert!(state.pen_pointers.is_empty());
+        assert!(!push_pen_events(
+            &mut state,
+            ptr::null_mut(),
+            WM_POINTERUPDATE,
+            0
+        ));
+        // Failed initial classification stays on the legacy route through
+        // release, so the emulated MouseDown cannot lose its MouseUp.
+        assert_eq!(state.legacy_pointers, [0]);
+        assert!(!push_pen_events(
+            &mut state,
+            ptr::null_mut(),
+            WM_POINTERUP,
+            0
+        ));
+        assert!(!push_pen_events(
+            &mut state,
+            ptr::null_mut(),
+            WM_POINTERLEAVE,
+            0
+        ));
+        assert!(state.legacy_pointers.is_empty());
+    }
+
+    #[test]
+    fn cancellation_in_coalesced_history_stops_the_remaining_samples() {
+        let mut canceled = POINTER_PEN_INFO::default();
+        canceled.pointer_info.pointer_flags = POINTER_FLAG_CANCELED;
+        let mut events = VecDeque::new();
+        push_coalesced_moves(
+            &mut events,
+            7,
+            &[POINTER_PEN_INFO::default(), canceled],
+            Some,
+        );
+        assert_eq!(
+            events.into_iter().collect::<Vec<_>>(),
+            [Event::PenCancelled { pointer_id: 7 }]
+        );
+    }
+
+    #[test]
+    fn every_history_sample_uses_the_coordinate_transform_and_failure_cancels() {
+        let mut info = POINTER_PEN_INFO::default();
+        info.pointer_info.pt_pixel_location = POINT { x: 480, y: 360 };
+        let mut events = VecDeque::new();
+        // A 200% scale and a logical client origin of (100, 50).
+        push_coalesced_moves(&mut events, 7, std::slice::from_ref(&info), |physical| {
+            Some(client_location(
+                POINT {
+                    x: physical.x / 2,
+                    y: physical.y / 2,
+                },
+                POINT { x: 100, y: 50 },
+            ))
+        });
+        let Some(Event::PenMove(sample)) = events.pop_front() else {
+            panic!("missing pen move")
+        };
+        assert_eq!((sample.x, sample.y), (140.0, 130.0));
+        push_coalesced_moves(&mut events, 7, std::slice::from_ref(&info), |_| None);
+        assert_eq!(
+            events.pop_front(),
+            Some(Event::PenCancelled { pointer_id: 7 })
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn coalesced_pen_history_arrives_in_chronological_order() {
         fn entry(timestamp: u64, screen_x: i32) -> POINTER_PEN_INFO {
             let mut info = POINTER_PEN_INFO::default();
-            info.pointer_info.pt_pixel_location = POINT { x: screen_x, y: 450 };
+            info.pointer_info.pt_pixel_location = POINT {
+                x: screen_x,
+                y: 450,
+            };
             info.pointer_info.pointer_flags = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
             info.pointer_info.performance_count = timestamp;
             info.pen_mask = PEN_MASK_PRESSURE;
@@ -917,12 +1198,9 @@ mod tests {
         let newest_first = [entry(10, 300), entry(9, 200), entry(8, 100)];
 
         let mut state = WindowState::default();
-        push_coalesced_moves(
-            &mut state.events,
-            7,
-            POINT { x: 100, y: 50 },
-            &newest_first,
-        );
+        push_coalesced_moves(&mut state.events, 7, &newest_first, |point| {
+            Some(client_location(point, POINT { x: 100, y: 50 }))
+        });
 
         let mut coordinates = Vec::new();
         while let Some(event) = state.events.pop_front() {
@@ -949,7 +1227,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(0, 0, 0, color);
+            .stamp_circle(0.5, 0.5, 0.5, color);
         crate::file::export(&document, &path, crate::file::ImageFormat::Png).unwrap();
 
         let image = decode_image(&path).unwrap();

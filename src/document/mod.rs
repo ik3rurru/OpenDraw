@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod antialiasing_tests;
 mod canvas_view;
 
 use std::fmt;
@@ -51,6 +53,22 @@ impl fmt::Display for DocumentError {
 }
 
 impl Document {
+    /// A user-created document starts with a separate background and an empty
+    /// active drawing layer. Validate both buffers before allocating either.
+    pub fn with_background(
+        width: u32,
+        height: u32,
+        background: Color,
+    ) -> Result<Self, DocumentError> {
+        if u64::from(width) * u64::from(height) > MAX_PIXELS / 2 {
+            return Err(DocumentError::TooLarge);
+        }
+        let mut document = Self::new(width, height, background)?;
+        document.layers[0].name = String::from("BACKGROUND");
+        document.add_layer()?;
+        Ok(document)
+    }
+
     pub fn new(width: u32, height: u32, background: Color) -> Result<Self, DocumentError> {
         Ok(Self {
             width,
@@ -305,51 +323,82 @@ impl PixelBuffer {
         }
     }
 
-    pub(crate) fn stamp_circle(&mut self, center_x: u32, center_y: u32, radius: u32, color: Color) {
+    pub(crate) fn stamp_circle(&mut self, center_x: f32, center_y: f32, radius: f32, color: Color) {
         if color.alpha() == 0 {
             return;
         }
-        self.edit_circle(center_x, center_y, radius, |background| {
-            color.blend_over(background)
+        self.edit_circle(center_x, center_y, radius, |background, coverage| {
+            if coverage == 1.0 {
+                return color.blend_over(background);
+            }
+            Color::rgba(
+                color.red(),
+                color.green(),
+                color.blue(),
+                (f32::from(color.alpha()) * coverage).round() as u8,
+            )
+            .blend_over(background)
         });
     }
 
-    pub(crate) fn erase_circle(&mut self, center_x: u32, center_y: u32, radius: u32, opacity: u8) {
+    pub(crate) fn erase_circle(&mut self, center_x: f32, center_y: f32, radius: f32, opacity: u8) {
         if opacity == 0 {
             return;
         }
-        let remaining_alpha = 255 - u16::from(opacity);
-        self.edit_circle(center_x, center_y, radius, |pixel| {
+        let full_remaining = 255 - u16::from(opacity);
+        self.edit_circle(center_x, center_y, radius, |pixel, coverage| {
+            let remaining = if coverage == 1.0 {
+                full_remaining
+            } else {
+                255 - (f32::from(opacity) * coverage).round() as u16
+            };
             Color::rgba(
                 pixel.red(),
                 pixel.green(),
                 pixel.blue(),
-                ((u16::from(pixel.alpha()) * remaining_alpha + 127) / 255) as u8,
+                ((u16::from(pixel.alpha()) * remaining + 127) / 255) as u8,
             )
         });
     }
 
     fn edit_circle(
         &mut self,
-        center_x: u32,
-        center_y: u32,
-        radius: u32,
-        mut edit: impl FnMut(Color) -> Color,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        mut edit: impl FnMut(Color, f32) -> Color,
     ) {
-        let radius = i64::from(radius);
-        let radius_squared = radius * radius;
-        for offset_y in -radius..=radius {
-            for offset_x in -radius..=radius {
-                if offset_x * offset_x + offset_y * offset_y > radius_squared {
+        if !center_x.is_finite() || !center_y.is_finite() || !radius.is_finite() || radius <= 0.0 {
+            return;
+        }
+        // Document coordinates describe pixel edges; evaluate the mask at each
+        // pixel's center. Radius is geometric (half the effective diameter).
+        // A one-pixel distance ramp approximates coverage at the contour; this
+        // is not the exact circle/pixel intersection area.
+        let outer = radius + 0.5;
+        let inner_squared = (radius - 0.5).max(0.0).powi(2);
+        let outer_squared = outer * outer;
+        let left = (center_x - outer).floor().max(0.0).min(self.width as f32) as u32;
+        let top = (center_y - outer).floor().max(0.0).min(self.height as f32) as u32;
+        let right = (center_x + outer).ceil().max(0.0).min(self.width as f32) as u32;
+        let bottom = (center_y + outer).ceil().max(0.0).min(self.height as f32) as u32;
+        for y in top..bottom {
+            let dy = y as f32 + 0.5 - center_y;
+            let dy_squared = dy * dy;
+            let row = y as usize * self.width as usize;
+            for x in left..right {
+                let dx = x as f32 + 0.5 - center_x;
+                let distance_squared = dx * dx + dy_squared;
+                if distance_squared >= outer_squared {
                     continue;
                 }
-                let x = i64::from(center_x) + offset_x;
-                let y = i64::from(center_y) + offset_y;
-                if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
-                    continue;
-                }
-                let index = (y as u32 * self.width + x as u32) as usize;
-                self.pixels[index] = edit(Color::from_u32(self.pixels[index])).as_u32();
+                let coverage = if radius >= 0.5 && distance_squared <= inner_squared {
+                    1.0
+                } else {
+                    outer - distance_squared.sqrt()
+                };
+                let index = row + x as usize;
+                self.pixels[index] = edit(Color::from_u32(self.pixels[index]), coverage).as_u32();
             }
         }
     }
@@ -358,6 +407,47 @@ impl PixelBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_background_documents_have_an_empty_active_layer_and_safe_combined_limits() {
+        for background in [
+            Color::rgb(255, 255, 255),
+            Color::rgb(30, 90, 170),
+            Color::rgba(0, 0, 0, 0),
+        ] {
+            let mut document = Document::with_background(7, 5, background).unwrap();
+            assert_eq!(document.layers.len(), 2);
+            assert_eq!(document.layers[0].name, "BACKGROUND");
+            assert_eq!(
+                document.layers[0].pixels.pixels,
+                vec![background.as_u32(); 35]
+            );
+            assert_eq!(document.active_layer, 1);
+            assert_eq!(document.active_layer().name, "LAYER 2");
+            assert!(
+                document
+                    .active_layer()
+                    .pixels
+                    .pixels
+                    .iter()
+                    .all(|&p| p == 0)
+            );
+            document.add_layer().unwrap();
+            assert_eq!(document.active_layer().name, "LAYER 3");
+        }
+        assert_eq!(
+            Document::with_background(0, 5, Color::rgb(0, 0, 0)).err(),
+            Some(DocumentError::InvalidDimensions)
+        );
+        assert_eq!(
+            Document::with_background(8192, 8192, Color::rgb(0, 0, 0)).err(),
+            Some(DocumentError::TooLarge)
+        );
+        assert_eq!(
+            Document::with_background(u32::MAX, u32::MAX, Color::rgb(0, 0, 0)).err(),
+            Some(DocumentError::TooLarge)
+        );
+    }
 
     #[test]
     fn creates_one_initialized_layer_with_safe_limits() {
@@ -380,7 +470,7 @@ mod tests {
         document
             .active_layer_mut()
             .pixels
-            .stamp_circle(3, 0, 0, black);
+            .stamp_circle(3.5, 0.5, 0.5, black);
         assert_eq!(
             document.composite_pixel(3, 0, Color::rgba(0, 0, 0, 0)),
             Some(black)
@@ -414,7 +504,7 @@ mod tests {
         let mut document = Document::new(7, 5, white).unwrap();
         let pixels = &mut document.active_layer_mut().pixels;
         for y in 0..pixels.height {
-            pixels.stamp_circle(3, y, 0, black);
+            pixels.stamp_circle(3.5, y as f32 + 0.5, 0.5, black);
         }
 
         pixels.flood_fill(1, 2, red);
