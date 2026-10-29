@@ -7,7 +7,7 @@ use crate::{
     file::{self, ImageFormat, OdrawError},
     graphics::{Color, FrameBuffer, Rect},
     platform::{DecodedImage, Event, Key, MouseButton, PenSample, PenTool},
-    tools::{BrushSample, BrushTool, EraserTool, Tool},
+    tools::{BrushSample, BrushTool, EraserTool, PressureCurve, Tool},
     ui::UiContext,
 };
 
@@ -31,6 +31,8 @@ const SELECT_BRUSH_BUTTON: u32 = 22;
 const SELECT_ERASER_BUTTON: u32 = 23;
 const SELECT_EYEDROPPER_BUTTON: u32 = 24;
 const SELECT_BUCKET_BUTTON: u32 = 25;
+const PRESSURE_CURVE_PAD: u32 = 26;
+const LINEAR_CURVE_BUTTON: u32 = 27;
 const UNDO_BUTTON: u32 = 31;
 const REDO_BUTTON: u32 = 32;
 const COLOR_PICKER_BASE: u32 = 200;
@@ -44,6 +46,7 @@ const HISTORY_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
 const EDITOR_LEFT_WIDTH: u32 = 120;
 const EDITOR_RIGHT_WIDTH: u32 = 220;
 const LAYER_ROW_HEIGHT: u32 = 58;
+const PRESSURE_CURVE_COLOR: Color = Color::rgb(90, 155, 230);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Background {
@@ -76,6 +79,7 @@ enum EditorIcon {
     Eraser,
     Eyedropper,
     Bucket,
+    LinearCurve,
     ArrowLeft,
     ArrowRight,
     Add,
@@ -795,6 +799,9 @@ impl App {
             }
         }
         self.render_color_picker(framebuffer);
+        if matches!(self.active_tool, ActiveTool::Brush | ActiveTool::Eraser) {
+            self.render_pressure_curve(framebuffer);
+        }
         let panel_x = window_width - EDITOR_RIGHT_WIDTH as i32;
         self.ui.label(framebuffer, panel_x + 16, 72, "DOCUMENT");
         self.ui.label(
@@ -984,6 +991,10 @@ impl App {
             format!("X {:.2}", sample.x),
             format!("Y {:.2}", sample.y),
             format!("PRESSURE {:.3}", sample.pressure),
+            format!(
+                "CURVE {:.3}",
+                self.brush.settings.dynamics.curve.apply(sample.pressure)
+            ),
             format!("TILT X {:.1} Y {:.1}", sample.tilt_x, sample.tilt_y),
             format!("ROTATION {:.0}", sample.rotation),
             format!(
@@ -1025,6 +1036,80 @@ impl App {
             self.brush.settings.color = Color::rgb(color.red(), color.green(), color.blue());
             self.rerender = true;
         }
+    }
+
+    fn render_pressure_curve(&mut self, framebuffer: &mut FrameBuffer) {
+        let top = 604;
+        self.ui.label(framebuffer, 20, top, "CURVE");
+        if self.icon_button(
+            framebuffer,
+            LINEAR_CURVE_BUTTON,
+            Rect::new(86, top - 2, 26, 18),
+            EditorIcon::LinearCurve,
+        ) {
+            self.set_pressure_curve(PressureCurve::LINEAR);
+        }
+
+        let pad = Rect::new(8, top + 18, 104, 64);
+        let (x, y) = self.brush.settings.dynamics.curve.control();
+        let (mut x, mut y) = ((x * 255.0).round() as u32, (y * 255.0).round() as u32);
+        if self.ui.point_pad(PRESSURE_CURVE_PAD, pad, &mut x, &mut y) {
+            self.set_pressure_curve(PressureCurve::new(x as f32 / 255.0, y as f32 / 255.0));
+        }
+
+        // Raw pressure runs left to right; the response used by the tools
+        // runs bottom to top.
+        let curve = self.brush.settings.dynamics.curve;
+        let width = pad.width.saturating_sub(1) as f32;
+        let height = pad.height.saturating_sub(1) as f32;
+        let bottom = pad.y + pad.height as i32 - 1;
+        let point = |pressure: f32, response: f32| {
+            (
+                pad.x + (pressure * width).round() as i32,
+                bottom - (response * height).round() as i32,
+            )
+        };
+        let start = point(0.0, 0.0);
+        let end = point(1.0, 1.0);
+        let (control_x, control_y) = curve.control();
+        let control = point(control_x, control_y);
+        framebuffer.fill_rect(pad, Color::rgb(22, 25, 30));
+        framebuffer.draw_line(start.0, start.1, end.0, end.1, Color::rgb(60, 66, 76));
+        let handle = Color::rgb(88, 94, 105);
+        framebuffer.draw_line(start.0, start.1, control.0, control.1, handle);
+        framebuffer.draw_line(control.0, control.1, end.0, end.1, handle);
+        let mut previous = start;
+        for column in 1..pad.width {
+            let pressure = column as f32 / width;
+            let next = point(pressure, curve.apply(pressure));
+            framebuffer.draw_line(previous.0, previous.1, next.0, next.1, PRESSURE_CURVE_COLOR);
+            previous = next;
+        }
+        if let Some(pen) = self
+            .last_pen_sample
+            .filter(|pen| self.pointer_is_pen && pen.in_contact)
+        {
+            let pressure = pen.pressure.clamp(0.0, 1.0);
+            let (x, y) = point(pressure, curve.apply(pressure));
+            framebuffer.fill_circle(x, y, 2, Color::rgb(245, 190, 70));
+        }
+        framebuffer.draw_circle(control.0, control.1, 4, Color::rgb(255, 255, 255));
+        framebuffer.draw_rect(
+            pad,
+            if self.ui.focused_id() == Some(PRESSURE_CURVE_PAD) {
+                Color::rgb(90, 155, 230)
+            } else {
+                Color::rgb(120, 130, 145)
+            },
+        );
+    }
+
+    /// The curve describes the pen rather than a tool, so painting and erasing
+    /// always share it.
+    fn set_pressure_curve(&mut self, curve: PressureCurve) {
+        self.brush.settings.dynamics.curve = curve;
+        self.eraser.settings.dynamics.curve = curve;
+        self.rerender = true;
     }
 
     fn render_layer_list(&mut self, framebuffer: &mut FrameBuffer) {
@@ -1255,6 +1340,11 @@ impl App {
                 framebuffer.draw_line(x + 2, y - 8, x + 4, y - 5, color);
                 framebuffer.draw_line(x - 5, y + 2, x + 5, y + 2, color);
                 framebuffer.fill_circle(x + 9, y + 7, 1, color);
+            }
+            EditorIcon::LinearCurve => {
+                framebuffer.draw_line(x - 8, y + 5, x + 8, y - 5, color);
+                framebuffer.fill_circle(x - 8, y + 5, 1, color);
+                framebuffer.fill_circle(x + 8, y - 5, 1, color);
             }
             EditorIcon::ArrowLeft => {
                 framebuffer.draw_line(x - 12, y, x + 12, y, color);
@@ -2440,6 +2530,61 @@ mod tests {
 
         assert_eq!(app.brush.settings.color, Color::rgb(255, 0, 0));
         assert!(app.undo_history.is_empty());
+    }
+
+    #[test]
+    fn pressure_curve_pad_reshapes_pen_strokes_until_reset() {
+        fn click(app: &mut App, framebuffer: &mut FrameBuffer, x: i32, y: i32) {
+            app.handle_event(Event::MouseMove { x, y });
+            app.handle_event(Event::MouseDown {
+                button: MouseButton::Left,
+            });
+            app.render(framebuffer);
+            app.handle_event(Event::MouseUp {
+                button: MouseButton::Left,
+            });
+            app.render(framebuffer);
+        }
+
+        let mut app = tablet_app();
+        app.brush.settings.radius = 0;
+        let mut framebuffer = FrameBuffer::default();
+        framebuffer.resize(1000, 700).unwrap();
+
+        // The top-left corner of the pad is the softest curve, y = 2 sqrt(x) - x.
+        click(&mut app, &mut framebuffer, 8, 622);
+        let soft = PressureCurve::new(0.0, 1.0);
+        assert_eq!(app.brush.settings.dynamics.curve, soft);
+        assert_eq!(app.eraser.settings.dynamics.curve, soft);
+        assert!(app.undo_history.is_empty());
+        assert!(!app.has_unsaved_changes());
+        // At 25% pressure the curve sits near y = 638, well above the diagonal at 669.
+        let curve_rows: Vec<i32> = (623..685)
+            .filter(|&y| framebuffer.get_pixel(34, y) == Some(PRESSURE_CURVE_COLOR))
+            .collect();
+        assert!(!curve_rows.is_empty());
+        assert!(curve_rows.iter().all(|&y| y < 650), "{curve_rows:?}");
+
+        let pen = pen_at(&app, 20.5, 20.5, 0.25, true);
+        app.handle_event(Event::PenDown(pen));
+        app.render(&mut framebuffer);
+        let marker = Some(Color::rgb(245, 190, 70));
+        assert_eq!(framebuffer.get_pixel(34, 638), marker);
+        app.handle_event(Event::PenUp(PenSample {
+            in_contact: false,
+            pressure: 0.0,
+            ..pen
+        }));
+        app.render(&mut framebuffer);
+        assert_ne!(framebuffer.get_pixel(34, 638), marker);
+        let pixels = &app.document.as_ref().unwrap().active_layer().pixels;
+        // 25% pressure responds as 75%: 255 * 0.75, instead of 64 when linear.
+        assert_eq!(pixels.get_pixel(20, 20).unwrap().alpha(), 191);
+
+        click(&mut app, &mut framebuffer, 99, 611);
+        assert_eq!(app.brush.settings.dynamics.curve, PressureCurve::LINEAR);
+        assert_eq!(app.eraser.settings.dynamics.curve, PressureCurve::LINEAR);
+        assert_eq!(app.undo_history.len(), 1);
     }
 
     #[test]
