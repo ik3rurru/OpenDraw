@@ -364,39 +364,9 @@ impl UiContext {
         saturation: &mut u32,
         value: &mut u32,
     ) -> bool {
-        self.register_focus(id);
-        let pressed = self
-            .mouse_pressed_at
-            .is_some_and(|(x, y)| rect.contains(x, y));
-        if pressed {
-            self.focused = Some(id);
-            self.dragging = Some(id);
-        }
-
-        let previous = (*saturation, *value);
+        let changed = self.point_pad(id, rect, saturation, value);
         let horizontal_max = rect.width.saturating_sub(1).max(1);
         let vertical_max = rect.height.saturating_sub(1).max(1);
-        if pressed || self.dragging == Some(id) {
-            let x = (self.pointer.0 - rect.x).clamp(0, horizontal_max as i32) as u32;
-            let y = (self.pointer.1 - rect.y).clamp(0, vertical_max as i32) as u32;
-            *saturation = (x * 255 + horizontal_max / 2) / horizontal_max;
-            *value = 255 - (y * 255 + vertical_max / 2) / vertical_max;
-            if !self.left_down {
-                self.dragging = None;
-            }
-        } else if self.focused == Some(id) {
-            match self.horizontal_step {
-                -1 => *saturation = saturation.saturating_sub(1),
-                1 => *saturation = saturation.saturating_add(1).min(255),
-                _ => {}
-            }
-            match self.vertical_step {
-                -1 => *value = value.saturating_add(1).min(255),
-                1 => *value = value.saturating_sub(1),
-                _ => {}
-            }
-        }
-
         for y in 0..rect.height {
             let row_value = 255 - y * 255 / vertical_max;
             for x in 0..rect.width {
@@ -420,7 +390,46 @@ impl UiContext {
         let marker_y = rect.y + ((255 - *value) * vertical_max / 255) as i32;
         framebuffer.draw_circle(marker_x, marker_y, 5, Color::rgb(255, 255, 255));
         framebuffer.draw_circle(marker_x, marker_y, 4, Color::rgb(20, 22, 26));
-        previous != (*saturation, *value)
+        changed
+    }
+
+    /// A point over 0..=255 on both axes: x grows to the right and y upwards.
+    /// Follows a drag or the arrow keys and draws nothing; the caller renders
+    /// the surface. Returns whether either coordinate changed.
+    pub fn point_pad(&mut self, id: u32, rect: Rect, x: &mut u32, y: &mut u32) -> bool {
+        self.register_focus(id);
+        let pressed = self
+            .mouse_pressed_at
+            .is_some_and(|(pointer_x, pointer_y)| rect.contains(pointer_x, pointer_y));
+        if pressed {
+            self.focused = Some(id);
+            self.dragging = Some(id);
+        }
+
+        let previous = (*x, *y);
+        let horizontal_max = rect.width.saturating_sub(1).max(1);
+        let vertical_max = rect.height.saturating_sub(1).max(1);
+        if pressed || self.dragging == Some(id) {
+            let column = (self.pointer.0 - rect.x).clamp(0, horizontal_max as i32) as u32;
+            let row = (self.pointer.1 - rect.y).clamp(0, vertical_max as i32) as u32;
+            *x = (column * 255 + horizontal_max / 2) / horizontal_max;
+            *y = 255 - (row * 255 + vertical_max / 2) / vertical_max;
+            if !self.left_down {
+                self.dragging = None;
+            }
+        } else if self.focused == Some(id) {
+            match self.horizontal_step {
+                -1 => *x = x.saturating_sub(1),
+                1 => *x = x.saturating_add(1).min(255),
+                _ => {}
+            }
+            match self.vertical_step {
+                -1 => *y = y.saturating_add(1).min(255),
+                1 => *y = y.saturating_sub(1),
+                _ => {}
+            }
+        }
+        previous != (*x, *y)
     }
 
     pub fn radio_button(

@@ -4,6 +4,7 @@ mod eraser;
 mod stroke;
 
 pub use brush::BrushTool;
+pub use dynamics::PressureCurve;
 pub use eraser::EraserTool;
 pub use stroke::BrushSample;
 

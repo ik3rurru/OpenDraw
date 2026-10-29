@@ -13,7 +13,7 @@ Un editor de dibujo raster para Windows, hecho desde cero en Rust y sin dependen
 - Historial de deshacer y rehacer para pintura y capas.
 - Documentos `.odraw`, importación PNG y exportación PNG/BMP.
 - Zoom con la rueda y desplazamiento del lienzo con el botón central.
-- Entrada de lápiz mediante Windows Pointer Input, con presión para grosor y opacidad, cursor en proximidad y goma física temporal.
+- Entrada de lápiz mediante Windows Pointer Input, con presión para grosor y opacidad, curva de presión ajustable, cursor en proximidad y goma física temporal.
 
 ## Ejecutar
 
@@ -65,6 +65,8 @@ El formato `.odraw` conserva las dimensiones del documento y todas sus capas, in
 
 El pincel y el borrador usan la presión para variar el tamaño y la opacidad durante el trazo. El tamaño mínimo corresponde al 10% del diámetro seleccionado, con un mínimo de un píxel. El ratón utiliza el mismo motor con presión constante al 100%. Las muestras de movimiento se interpolan en orden cronológico y conservan el espaciado entre eventos.
 
+La curva de presión, bajo el selector de color, ajusta la respuesta del lápiz y es común al pincel y al borrador. Arrastra el punto de control hacia arriba a la izquierda para una respuesta suave, en la que una presión ligera ya da trazos anchos y opacos, o hacia abajo a la derecha para una respuesta firme. El botón con la diagonal vuelve a la respuesta lineal. Con el lápiz apoyado, un punto sobre la curva marca la presión actual, y `F12` muestra la presión del controlador junto al valor corregido. La curva se aplica a cada marca después de interpolar el trazo, así que el resultado no depende de la frecuencia de muestreo, y no cambia el ratón, que siempre pinta con presión completa. Como el resto de ajustes de herramienta, no se guarda entre sesiones.
+
 Los bordes circulares se suavizan en los píxeles de la capa, conservando posiciones y tamaños fraccionarios. El suavizado se mantiene al deshacer, guardar y exportar. El zoom sigue mostrando los píxeles directamente: a mucho aumento se verá su estructura raster.
 
 Para probar una Wacom, activa **Usar Windows Ink** en el perfil de OpenDraw del controlador. Wacom documenta la [configuración de Windows Ink por aplicación](https://support.wacom.com/hc/en-us/articles/1500006328562-A-virtual-keyboard-opens-every-time-I-use-my-pen-in-Windows-why). Ejecuta `cargo run`, crea un documento y pulsa `F12` para ver presión, contacto, inclinación, botones y muestras recibidas.
@@ -73,10 +75,11 @@ Para probar una Wacom, activa **Usar Windows Ink** en el perfil de OpenDraw del 
 - Traza una línea aumentando la presión: deben variar grosor y opacidad.
 - Levanta el lápiz y vuelve a apoyarlo: los trazos deben quedar separados. `Ctrl+Z` debe deshacer un trazo completo.
 - Si tu lápiz tiene goma, úsala y vuelve a la punta: la herramienta seleccionada debe conservarse.
+- Lleva el punto de la curva a la esquina superior izquierda y repite la línea: con poca presión debe salir más gruesa y opaca. Restablece la curva con el botón de la diagonal.
 - Prueba los botones y deslizadores de la interfaz con el lápiz, además del ratón.
 - Comprueba la posición con zoom y desplazamiento del lienzo, y con el escalado de pantalla que uses. Cambia de ventana durante un contacto y verifica que el trazo termina.
 
-La validación automática cubre el motor y paquetes generados con los tipos nativos del SDK de Windows, con pruebas de tamaño, alineamiento y posición de los campos en memoria. Los detalles están en [tests/fixtures](tests/fixtures/README.md). El dibujo con presión se ha comprobado con una Wacom física. El ajuste de curva de presión, la asignación de acciones a botones y el backend Wintab siguen pendientes. La inclinación se muestra en el diagnóstico y se conserva en las muestras, pero todavía no modifica la forma del pincel.
+La validación automática cubre el motor y paquetes generados con los tipos nativos del SDK de Windows, con pruebas de tamaño, alineamiento y posición de los campos en memoria. Los detalles están en [tests/fixtures](tests/fixtures/README.md). El dibujo con presión se ha comprobado con una Wacom física. La curva de presión está cubierta por las pruebas automáticas y falta comprobarla con la Wacom física. La asignación de acciones a botones y el backend Wintab siguen pendientes. La inclinación se muestra en el diagnóstico y se conserva en las muestras, pero todavía no modifica la forma del pincel.
 
 ## Estado
 

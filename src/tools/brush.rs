@@ -91,6 +91,7 @@ impl BrushSettings {
 mod tests {
     use super::*;
     use crate::document::Document;
+    use crate::tools::PressureCurve;
     use crate::tools::stroke::sample;
 
     #[test]
@@ -188,6 +189,43 @@ mod tests {
                 assert_eq!(draw(radius, steps, true), expected, "duplicate packets");
             }
         }
+    }
+
+    #[test]
+    fn pressure_curve_applies_per_dab_independently_of_packet_count() {
+        fn draw(curve: PressureCurve, steps: u32) -> Vec<u32> {
+            let mut document = Document::new(100, 50, Color::rgba(0, 0, 0, 0)).unwrap();
+            let pixels = &mut document.active_layer_mut().pixels;
+            let mut brush = BrushTool::default();
+            brush.settings.radius = 6;
+            brush.settings.opacity = 90;
+            brush.settings.dynamics.curve = curve;
+            brush.pointer_down(pixels, sample(10.25, 15.75, 0.1));
+            for step in 1..=steps {
+                let t = step as f32 / steps as f32;
+                let point = sample(10.25 + 70.0 * t, 15.75 + 20.0 * t, 0.1 + 0.6 * t);
+                brush.pointer_move(pixels, point);
+            }
+            brush.pointer_up(pixels);
+            pixels.pixels.clone()
+        }
+        let soft = PressureCurve::new(0.1, 0.9);
+        let firm = PressureCurve::new(0.9, 0.1);
+        for curve in [soft, firm] {
+            let expected = draw(curve, 1);
+            for steps in [3, 64, 1024] {
+                assert_eq!(draw(curve, steps), expected, "{curve:?}, packets={steps}");
+            }
+        }
+        let total = |pixels: Vec<u32>| -> u32 {
+            pixels
+                .iter()
+                .map(|&p| u32::from(Color::from_u32(p).alpha()))
+                .sum()
+        };
+        let linear = total(draw(PressureCurve::LINEAR, 1));
+        assert!(total(draw(soft, 1)) > linear);
+        assert!(total(draw(firm, 1)) < linear);
     }
 
     #[test]
